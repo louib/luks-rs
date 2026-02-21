@@ -1,0 +1,27 @@
+---
+name: CI on main
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v11
+      - name: run cargo test
+        run: nix develop -c cargo test --all-features
+
+  formatting:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v11
+      - name: running cargo fmt
+        run: |
+          cargo fmt --check
