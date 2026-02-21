@@ -1,14 +1,209 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use byteorder::{BigEndian, ReadBytesExt};
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
+use thiserror::Error;
+
+/// The magic signature for LUKS devices: "LUKS\xBA\xBE".
+pub const LUKS_MAGIC: [u8; 6] = *b"LUKS\xBA\xBE";
+
+/// Size of the LUKS magic signature in bytes.
+pub const LUKS_MAGIC_SIZE: usize = 6;
+/// Size of the LUKS version field in bytes.
+pub const LUKS_VERSION_SIZE: usize = 2;
+/// Size of the LUKS2 label field in bytes.
+pub const LUKS2_LABEL_SIZE: usize = 32;
+/// Size of the LUKS2 checksum algorithm field in bytes.
+pub const LUKS2_CHECKSUM_ALG_SIZE: usize = 32;
+/// Size of the LUKS2 salt field in bytes.
+pub const LUKS2_SALT_SIZE: usize = 64;
+/// Size of the LUKS2 UUID field in bytes.
+pub const LUKS2_UUID_SIZE: usize = 40;
+/// Size of the LUKS2 subsystem field in bytes.
+pub const LUKS2_SUBSYSTEM_SIZE: usize = 32;
+/// The offset in bytes where the LUKS2 JSON metadata area begins.
+pub const LUKS2_JSON_AREA_OFFSET: u64 = 4096;
+
+#[derive(Error, Debug)]
+pub enum LuksError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Invalid LUKS magic: {0:?}")]
+    InvalidMagic([u8; LUKS_MAGIC_SIZE]),
+    #[error("Unsupported LUKS version: {0}")]
+    UnsupportedVersion(u16),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Invalid LUKS2 header: {0}")]
+    InvalidHeader(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Luks2Metadata {
+    pub keyslots: serde_json::Value,
+    pub tokens: serde_json::Value,
+    pub segments: serde_json::Value,
+    pub digests: serde_json::Value,
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct Luks2Header {
+    pub version: u16,
+    pub hdr_size: u64,
+    pub seqid: u64,
+    pub label: String,
+    pub checksum_alg: String,
+    pub salt: [u8; LUKS2_SALT_SIZE],
+    pub uuid: String,
+    pub subsystem: String,
+    pub hdr_offset: u64,
+    pub metadata: Luks2Metadata,
+}
+
+#[derive(Debug, Clone)]
+pub enum LuksHeader {
+    V1, // Placeholder for LUKS1
+    V2(Luks2Header),
+}
+
+impl LuksHeader {
+    pub fn from_reader<R: Read + Seek>(mut reader: R) -> Result<Self, LuksError> {
+        let mut magic = [0u8; LUKS_MAGIC_SIZE];
+        reader.read_exact(&mut magic)?;
+
+        if magic != LUKS_MAGIC {
+            return Err(LuksError::InvalidMagic(magic));
+        }
+
+        let version = reader.read_u16::<BigEndian>()?;
+        match version {
+            1 => Ok(LuksHeader::V1),
+            2 => {
+                let hdr_size = reader.read_u64::<BigEndian>()?;
+                let seqid = reader.read_u64::<BigEndian>()?;
+
+                let mut label_buf = [0u8; LUKS2_LABEL_SIZE];
+                reader.read_exact(&mut label_buf)?;
+                let label = String::from_utf8_lossy(&label_buf).trim_matches('\0').to_string();
+
+                let mut checksum_alg_buf = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
+                reader.read_exact(&mut checksum_alg_buf)?;
+                let checksum_alg = String::from_utf8_lossy(&checksum_alg_buf)
+                    .trim_matches('\0')
+                    .to_string();
+
+                let mut salt = [0u8; LUKS2_SALT_SIZE];
+                reader.read_exact(&mut salt)?;
+
+                let mut uuid_buf = [0u8; LUKS2_UUID_SIZE];
+                reader.read_exact(&mut uuid_buf)?;
+                let uuid = String::from_utf8_lossy(&uuid_buf).trim_matches('\0').to_string();
+
+                let mut subsystem_buf = [0u8; LUKS2_SUBSYSTEM_SIZE];
+                reader.read_exact(&mut subsystem_buf)?;
+                let subsystem = String::from_utf8_lossy(&subsystem_buf)
+                    .trim_matches('\0')
+                    .to_string();
+
+                let hdr_offset = reader.read_u64::<BigEndian>()?;
+
+                // Skip padding and checksum to get to the JSON area
+                reader.seek(SeekFrom::Start(LUKS2_JSON_AREA_OFFSET))?;
+
+                // The JSON area size is (hdr_size - LUKS2_JSON_AREA_OFFSET)
+                if hdr_size < LUKS2_JSON_AREA_OFFSET {
+                    return Err(LuksError::InvalidHeader(format!(
+                        "Header size {} is too small",
+                        hdr_size
+                    )));
+                }
+                let json_size = hdr_size - LUKS2_JSON_AREA_OFFSET;
+                let mut json_buf = vec![0u8; json_size as usize];
+                reader.read_exact(&mut json_buf)?;
+
+                // Trim trailing nulls from JSON buffer
+                let json_str = String::from_utf8_lossy(&json_buf).trim_matches('\0').to_string();
+                let metadata: Luks2Metadata = serde_json::from_str(&json_str)?;
+
+                Ok(LuksHeader::V2(Luks2Header {
+                    version,
+                    hdr_size,
+                    seqid,
+                    label,
+                    checksum_alg,
+                    salt,
+                    uuid,
+                    subsystem,
+                    hdr_offset,
+                    metadata,
+                }))
+            }
+            _ => Err(LuksError::UnsupportedVersion(version)),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byteorder::{BigEndian, WriteBytesExt};
+    use std::io::Cursor;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn test_detect_luks2() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&LUKS_MAGIC);
+        buf.write_u16::<BigEndian>(2).unwrap();
+
+        // hdr_size (binary + json)
+        let json_data = r#"{"keyslots":{},"tokens":{},"segments":{},"digests":{},"config":{}}"#;
+        let hdr_size = LUKS2_JSON_AREA_OFFSET + json_data.len() as u64;
+        buf.write_u64::<BigEndian>(hdr_size).unwrap();
+
+        // seqid
+        buf.write_u64::<BigEndian>(1).unwrap();
+
+        // label
+        let mut label = [0u8; LUKS2_LABEL_SIZE];
+        label[..4].copy_from_slice(b"test");
+        buf.extend_from_slice(&label);
+
+        // checksum_alg
+        let mut checksum_alg = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
+        checksum_alg[..6].copy_from_slice(b"sha256");
+        buf.extend_from_slice(&checksum_alg);
+
+        // salt
+        buf.extend_from_slice(&[0u8; LUKS2_SALT_SIZE]);
+
+        // uuid
+        let mut uuid = [0u8; LUKS2_UUID_SIZE];
+        uuid[..4].copy_from_slice(b"abcd");
+        buf.extend_from_slice(&uuid);
+
+        // subsystem
+        let subsystem = [0u8; LUKS2_SUBSYSTEM_SIZE];
+        buf.extend_from_slice(&subsystem);
+
+        // hdr_offset
+        buf.write_u64::<BigEndian>(0).unwrap();
+
+        // Padding/checksum up to JSON area
+        buf.resize(LUKS2_JSON_AREA_OFFSET as usize, 0);
+
+        // JSON area
+        buf.extend_from_slice(json_data.as_bytes());
+
+        let cursor = Cursor::new(buf);
+        let header = LuksHeader::from_reader(cursor).unwrap();
+
+        if let LuksHeader::V2(h) = header {
+            assert_eq!(h.version, 2);
+            assert_eq!(h.label, "test");
+            assert_eq!(h.checksum_alg, "sha256");
+            assert_eq!(h.uuid, "abcd");
+        } else {
+            panic!("Expected LUKS2 header");
+        }
     }
 }
