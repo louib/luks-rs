@@ -52,10 +52,19 @@ pub enum LuksError {
     UnsupportedChecksumAlg(String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Luks2KeyslotType {
+    Luks2,
+    Reencrypt,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Keyslot {
     #[serde(rename = "type")]
-    pub slot_type: String,
+    pub slot_type: Luks2KeyslotType,
     pub key_size: usize,
     pub priority: Option<i32>,
     #[serde(flatten)]
