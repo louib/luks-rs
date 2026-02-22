@@ -1,6 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::{Read, Seek};
 use thiserror::Error;
 
@@ -52,8 +53,18 @@ pub enum LuksError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Luks2Keyslot {
+    #[serde(rename = "type")]
+    pub slot_type: String,
+    pub key_size: usize,
+    pub priority: Option<i32>,
+    #[serde(flatten)]
+    pub extra: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Metadata {
-    pub keyslots: serde_json::Value,
+    pub keyslots: HashMap<String, Luks2Keyslot>,
     pub tokens: serde_json::Value,
     pub segments: serde_json::Value,
     pub digests: serde_json::Value,
@@ -75,10 +86,27 @@ pub struct Luks2Header {
     pub metadata: Luks2Metadata,
 }
 
+impl Luks2Header {
+    /// Returns the number of configured keyslots.
+    pub fn num_keyslots(&self) -> usize {
+        self.metadata.keyslots.len()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LuksHeader {
     V1, // Placeholder for LUKS1
     V2(Luks2Header),
+}
+
+impl LuksHeader {
+    /// Returns the number of configured keyslots.
+    pub fn num_keyslots(&self) -> usize {
+        match self {
+            LuksHeader::V1 => 8, // LUKS1 always has 8 keyslot entries in the header
+            LuksHeader::V2(h) => h.num_keyslots(),
+        }
+    }
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -258,8 +286,66 @@ mod tests {
             assert_eq!(h.version, 2);
             assert_eq!(h.label, "test");
             assert_eq!(h.uuid, "abcd");
+            assert_eq!(h.num_keyslots(), 0);
         } else {
             panic!("Expected LUKS2 header");
         }
+    }
+
+    #[test]
+    fn test_num_keyslots() {
+        let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
+        let json_data = r#"{
+            "keyslots": {
+                "0": { "type": "luks2", "key_size": 64, "priority": 1 },
+                "1": { "type": "luks2", "key_size": 64, "priority": 1 }
+            },
+            "tokens": {},
+            "segments": {},
+            "digests": {},
+            "config": {}
+        }"#;
+        let hdr_size = LUKS2_BINARY_HEADER_SIZE as u64 + json_data.len() as u64;
+
+        {
+            let mut cursor = Cursor::new(&mut binary_header);
+            cursor.write_all(&LUKS_MAGIC).unwrap();
+            cursor.write_u16::<BigEndian>(2).unwrap();
+            cursor.write_u64::<BigEndian>(hdr_size).unwrap();
+            cursor.write_u64::<BigEndian>(1).unwrap();
+
+            let label = [0u8; LUKS2_LABEL_SIZE];
+            cursor.write_all(&label).unwrap();
+
+            let mut csum_alg = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
+            csum_alg[..6].copy_from_slice(b"sha256");
+            cursor.write_all(&csum_alg).unwrap();
+
+            cursor.write_all(&[0u8; LUKS2_SALT_SIZE]).unwrap();
+
+            let uuid = [0u8; LUKS2_UUID_SIZE];
+            cursor.write_all(&uuid).unwrap();
+
+            let subsystem = [0u8; LUKS2_SUBSYSTEM_SIZE];
+            cursor.write_all(&subsystem).unwrap();
+
+            cursor.write_u64::<BigEndian>(0).unwrap();
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(&binary_header);
+        hasher.update(json_data.as_bytes());
+        let result = hasher.finalize();
+
+        binary_header[LUKS2_CHECKSUM_OFFSET..LUKS2_CHECKSUM_OFFSET + SHA256_DIGEST_SIZE]
+            .copy_from_slice(&result);
+
+        let mut buf = binary_header;
+        buf.extend_from_slice(json_data.as_bytes());
+
+        let cursor = Cursor::new(buf);
+        let header = LuksHeader::from_reader(cursor).unwrap();
+
+        assert_eq!(header.num_keyslots(), 2);
     }
 }

@@ -25,6 +25,7 @@ fn main() {
             println!("  Subsystem:     {}", h.subsystem);
             println!("  Checksum Alg:  {}", h.checksum_alg);
             println!("  Header Size:   {}", h.hdr_size);
+            println!("  Keyslots:      {}", h.num_keyslots());
         }
         Err(e) => {
             eprintln!("Error reading LUKS header: {}", e);

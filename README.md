@@ -13,4 +13,5 @@ cargo run --example read_header -- /dev/sda1
 ## References
 
 - [LUKS2 On-Disk Format Specification](https://gitlab.com/cryptsetup/LUKS2-docs/blob/main/luks2_doc_wip.pdf)
+- [LUKS1 On-Disk Format Specification](https://cdn.kernel.org/pub/linux/utils/cryptsetup/LUKS_docs/on-disk-format.pdf)
 - [New Methods in Hard Disk Encryption](https://clemens.endorphin.org/nmihde/nmihde-A4-ds.pdf)
