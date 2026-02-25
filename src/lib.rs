@@ -2,7 +2,9 @@ use byteorder::{BigEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 use std::io::{Read, Seek};
+use std::str::FromStr;
 use thiserror::Error;
 
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
@@ -80,6 +82,55 @@ pub struct Luks2Metadata {
     pub config: serde_json::Value,
 }
 
+/// A LUKS device UUID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LuksUuid(String);
+
+impl LuksUuid {
+    /// Returns the UUID as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for LuksUuid {
+    type Err = LuksError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim_matches('\0');
+        if s.is_empty() {
+            return Err(LuksError::InvalidHeader("UUID is empty".to_string()));
+        }
+        if s.len() >= LUKS2_UUID_SIZE {
+            return Err(LuksError::InvalidHeader(format!(
+                "UUID too long: {} (max {})",
+                s.len(),
+                LUKS2_UUID_SIZE - 1
+            )));
+        }
+        if !s.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            return Err(LuksError::InvalidHeader(format!(
+                "UUID contains invalid characters: {}",
+                s
+            )));
+        }
+        Ok(LuksUuid(s.to_string()))
+    }
+}
+
+impl fmt::Display for LuksUuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl PartialEq<&str> for LuksUuid {
+    fn eq(&self, other: &&str) -> bool {
+        &self.0 == *other
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Luks2Header {
     pub version: u16,
@@ -88,7 +139,7 @@ pub struct Luks2Header {
     pub label: String,
     pub checksum_alg: String,
     pub salt: [u8; LUKS2_SALT_SIZE],
-    pub uuid: String,
+    pub uuid: LuksUuid,
     pub subsystem: String,
     pub hdr_offset: u64,
     pub checksum: [u8; LUKS2_CHECKSUM_SIZE],
@@ -163,7 +214,7 @@ impl LuksHeader {
 
                 let mut uuid_buf = [0u8; LUKS2_UUID_SIZE];
                 cursor.read_exact(&mut uuid_buf)?;
-                let uuid = String::from_utf8_lossy(&uuid_buf).trim_matches('\0').to_string();
+                let uuid = LuksUuid::from_str(&String::from_utf8_lossy(&uuid_buf))?;
 
                 let mut subsystem_buf = [0u8; LUKS2_SUBSYSTEM_SIZE];
                 cursor.read_exact(&mut subsystem_buf)?;
@@ -171,6 +222,9 @@ impl LuksHeader {
                     .trim_matches('\0')
                     .to_string();
 
+                // TODO must match the physical header offset on the device (in bytes). If it does
+                // not match, the header is misplaced and must not be used. It is a prevention to
+                // partition resize or manipulation with the device start offset.
                 let hdr_offset = cursor.read_u64::<BigEndian>()?;
 
                 let mut checksum = [0u8; LUKS2_CHECKSUM_SIZE];
@@ -332,7 +386,8 @@ mod tests {
 
             cursor.write_all(&[0u8; LUKS2_SALT_SIZE]).unwrap();
 
-            let uuid = [0u8; LUKS2_UUID_SIZE];
+            let mut uuid = [0u8; LUKS2_UUID_SIZE];
+            uuid[..4].copy_from_slice(b"abcd");
             cursor.write_all(&uuid).unwrap();
 
             let subsystem = [0u8; LUKS2_SUBSYSTEM_SIZE];
@@ -356,5 +411,14 @@ mod tests {
         let header = LuksHeader::from_reader(cursor).unwrap();
 
         assert_eq!(header.num_keyslots(), 2);
+    }
+
+    #[test]
+    fn test_luks_uuid_parsing() {
+        assert!(LuksUuid::from_str("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(LuksUuid::from_str("abcd").is_ok());
+        assert!(LuksUuid::from_str("").is_err());
+        assert!(LuksUuid::from_str("invalid-char!").is_err());
+        assert!(LuksUuid::from_str(&"a".repeat(40)).is_err());
     }
 }
