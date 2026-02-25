@@ -1,5 +1,7 @@
 # luks-rs
 
+[![Crates.io](https://img.shields.io/crates/v/luks.svg)](https://crates.io/crates/luks)
+
 Pure-Rust Library for the Linux Unified Key Setup
 
 ## Examples
