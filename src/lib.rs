@@ -203,7 +203,7 @@ pub enum Luks2Keyslot {
         extra: HashMap<String, serde_json::Value>,
     },
     Reencrypt {
-        key_size: Luks2KeySize,
+        key_size: String,
         priority: Option<Luks2KeyslotPriority>,
         af: Luks2Af,
         area: Luks2Area,
@@ -222,9 +222,12 @@ impl Luks2Keyslot {
                     return Err("LUKS2 keyslot must have area type 'raw'".to_string());
                 }
             }
-            Luks2Keyslot::Reencrypt { area, .. } => {
+            Luks2Keyslot::Reencrypt { area, key_size, .. } => {
                 if area.area_type == Luks2AreaType::Raw {
                     return Err("Reencrypt keyslot cannot have area type 'raw'".to_string());
+                }
+                if key_size != "1" {
+                    return Err("Reencrypt keyslot must have key_size 1".to_string());
                 }
             }
         }
