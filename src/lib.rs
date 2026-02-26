@@ -82,6 +82,30 @@ impl<'de> Deserialize<'de> for Luks2U64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "u64", try_from = "u64")]
+pub enum Luks2KeySize {
+    Size32 = 32,
+    Size64 = 64,
+}
+
+impl From<Luks2KeySize> for u64 {
+    fn from(val: Luks2KeySize) -> Self {
+        val as u64
+    }
+}
+
+impl TryFrom<u64> for Luks2KeySize {
+    type Error = String;
+    fn try_from(val: u64) -> Result<Self, Self::Error> {
+        match val {
+            32 => Ok(Luks2KeySize::Size32),
+            64 => Ok(Luks2KeySize::Size64),
+            _ => Err(format!("Unsupported key size: {}", val)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Luks2KeyslotType {
@@ -104,7 +128,7 @@ pub struct Luks2Area {
     #[serde(rename = "type")]
     pub area_type: String,
     pub encryption: String,
-    pub key_size: usize,
+    pub key_size: Luks2KeySize,
     pub offset: Luks2U64,
     pub size: Luks2U64,
 }
@@ -129,7 +153,7 @@ pub enum Luks2Kdf {
 pub struct Luks2Keyslot {
     #[serde(rename = "type")]
     pub slot_type: Luks2KeyslotType,
-    pub key_size: usize,
+    pub key_size: Luks2KeySize,
     pub priority: Option<i32>,
     pub af: Luks2Af,
     pub area: Luks2Area,
@@ -698,7 +722,7 @@ mod tests {
         assert_eq!(metadata.config.json_size, Luks2U64(12288));
 
         let ks0 = metadata.keyslots.get("0").unwrap();
-        assert_eq!(ks0.key_size, 32);
+        assert_eq!(ks0.key_size, Luks2KeySize::Size32);
         assert!(matches!(ks0.kdf, Luks2Kdf::Argon2i { .. }));
 
         let ks1 = metadata.keyslots.get("1").unwrap();
