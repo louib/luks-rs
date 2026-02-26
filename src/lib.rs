@@ -213,6 +213,25 @@ pub enum Luks2Keyslot {
     },
 }
 
+impl Luks2Keyslot {
+    /// Validates the keyslot
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Luks2Keyslot::Luks2 { area, .. } => {
+                if area.area_type != Luks2AreaType::Raw {
+                    return Err("LUKS2 keyslot must have area type 'raw'".to_string());
+                }
+            }
+            Luks2Keyslot::Reencrypt { area, .. } => {
+                if area.area_type == Luks2AreaType::Raw {
+                    return Err("Reencrypt keyslot cannot have area type 'raw'".to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Token {
@@ -297,8 +316,21 @@ pub struct Luks2Config {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+fn deserialize_and_validate_keyslots<'de, D>(deserializer: D) -> Result<HashMap<String, Luks2Keyslot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let keyslots: HashMap<String, Luks2Keyslot> = HashMap::deserialize(deserializer)?;
+    for (id, slot) in &keyslots {
+        slot.validate()
+            .map_err(|e| serde::de::Error::custom(format!("Validation failed for keyslot {}: {}", id, e)))?;
+    }
+    Ok(keyslots)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Metadata {
+    #[serde(deserialize_with = "deserialize_and_validate_keyslots")]
     pub keyslots: HashMap<String, Luks2Keyslot>,
     pub tokens: HashMap<String, Luks2Token>,
     pub segments: HashMap<String, Luks2Segment>,
@@ -794,5 +826,32 @@ mod tests {
 
         let digest0 = metadata.digests.get("0").unwrap();
         assert!(matches!(digest0, Luks2Digest::Pbkdf2 { .. }));
+    }
+
+    #[test]
+    fn test_invalid_keyslot_area_type() {
+        let json_data = r#"{
+            "keyslots": {
+                "0": {
+                    "type": "luks2",
+                    "key_size": 32,
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "none", "encryption": "aes-xts-plain64", "key_size": 32, "offset": "32768", "size": "131072" },
+                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "salt" }
+                }
+            },
+            "tokens": {},
+            "segments": {},
+            "digests": {},
+            "config": { "json_size": "12288", "keyslots_size": "4161536" }
+        }"#;
+        let result: Result<Luks2Metadata, _> = serde_json::from_str(json_data);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("LUKS2 keyslot must have area type 'raw'")
+        );
     }
 }
