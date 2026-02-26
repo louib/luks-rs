@@ -54,6 +54,34 @@ pub enum LuksError {
     UnsupportedChecksumAlg(String),
 }
 
+/// A 64-bit unsigned integer that is represented as a decimal string in JSON.
+///
+/// This is necessary because JSON's standard number type is a double-precision floating point
+/// value (IEEE 754), which cannot accurately represent the full range of 64-bit integers
+/// without losing precision. By encoding large integers as strings, LUKS2 ensures that
+/// values like offsets and sizes remain exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Luks2U64(pub u64);
+
+impl Serialize for Luks2U64 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Luks2U64 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<u64>().map(Luks2U64).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Luks2KeyslotType {
@@ -77,8 +105,8 @@ pub struct Luks2Area {
     pub area_type: String,
     pub encryption: String,
     pub key_size: usize,
-    pub offset: String,
-    pub size: String,
+    pub offset: Luks2U64,
+    pub size: Luks2U64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,13 +150,47 @@ pub enum Luks2Token {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Luks2SegmentSize {
+    U64(u64),
+    Dynamic,
+}
+
+impl Serialize for Luks2SegmentSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Luks2SegmentSize::U64(v) => serializer.serialize_str(&v.to_string()),
+            Luks2SegmentSize::Dynamic => serializer.serialize_str("dynamic"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Luks2SegmentSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        if s == "dynamic" {
+            Ok(Luks2SegmentSize::Dynamic)
+        } else {
+            s.parse::<u64>()
+                .map(Luks2SegmentSize::U64)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Segment {
     Crypt {
-        offset: String,
-        iv_tweak: String,
-        size: String,
+        offset: Luks2U64,
+        iv_tweak: Luks2U64,
+        size: Luks2SegmentSize,
         encryption: String,
         sector_size: u32,
         #[serde(flatten)]
@@ -153,8 +215,8 @@ pub enum Luks2Digest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Config {
-    pub json_size: String,
-    pub keyslots_size: String,
+    pub json_size: Luks2U64,
+    pub keyslots_size: Luks2U64,
     pub flags: Option<Vec<String>>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -633,7 +695,7 @@ mod tests {
         assert_eq!(metadata.tokens.len(), 1);
         assert_eq!(metadata.segments.len(), 1);
         assert_eq!(metadata.digests.len(), 1);
-        assert_eq!(metadata.config.json_size, "12288");
+        assert_eq!(metadata.config.json_size, Luks2U64(12288));
 
         let ks0 = metadata.keyslots.get("0").unwrap();
         assert_eq!(ks0.key_size, 32);
@@ -646,7 +708,8 @@ mod tests {
         assert!(matches!(token0, Luks2Token::Keyring { .. }));
 
         let segment0 = metadata.segments.get("0").unwrap();
-        assert!(matches!(segment0, Luks2Segment::Crypt { .. }));
+        let Luks2Segment::Crypt { size, .. } = segment0;
+        assert_eq!(size, &Luks2SegmentSize::Dynamic);
 
         let digest0 = metadata.digests.get("0").unwrap();
         assert!(matches!(digest0, Luks2Digest::Pbkdf2 { .. }));
