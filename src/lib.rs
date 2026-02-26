@@ -930,4 +930,65 @@ mod tests {
         assert_eq!(*direction, Luks2ReencryptDirection::Forward);
         assert_eq!(key_size, "1");
     }
+
+    #[test]
+    fn test_parse_reencrypt_area_types() {
+        let json_data = r#"{
+            "keyslots": {
+                "checksum_slot": {
+                    "type": "reencrypt",
+                    "mode": "reencrypt",
+                    "direction": "forward",
+                    "key_size": "1",
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "checksum", "hash": "sha256", "sector_size": 512, "offset": "32768", "size": "131072" },
+                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "salt" }
+                },
+                "datashift_slot": {
+                    "type": "reencrypt",
+                    "mode": "reencrypt",
+                    "direction": "forward",
+                    "key_size": "1",
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "datashift", "shift_size": "4096", "offset": "32768", "size": "131072" },
+                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "salt" }
+                },
+                "datashift_checksum_slot": {
+                    "type": "reencrypt",
+                    "mode": "reencrypt",
+                    "direction": "forward",
+                    "key_size": "1",
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "datashift-checksum", "hash": "sha256", "sector_size": 512, "shift_size": "4096", "offset": "32768", "size": "131072" },
+                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "salt" }
+                }
+            },
+            "tokens": {},
+            "segments": {},
+            "digests": {},
+            "config": { "json_size": "12288", "keyslots_size": "4161536" }
+        }"#;
+        let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
+
+        let checksum_slot = metadata.keyslots.get("checksum_slot").unwrap();
+        if let Luks2Keyslot::Reencrypt { area, .. } = checksum_slot {
+            assert!(matches!(area, Luks2Area::Checksum { .. }));
+        } else {
+            panic!("Expected Reencrypt keyslot")
+        }
+
+        let datashift_slot = metadata.keyslots.get("datashift_slot").unwrap();
+        if let Luks2Keyslot::Reencrypt { area, .. } = datashift_slot {
+            assert!(matches!(area, Luks2Area::Datashift { .. }));
+        } else {
+            panic!("Expected Reencrypt keyslot")
+        }
+
+        let datashift_checksum_slot = metadata.keyslots.get("datashift_checksum_slot").unwrap();
+        if let Luks2Keyslot::Reencrypt { area, .. } = datashift_checksum_slot {
+            assert!(matches!(area, Luks2Area::DatashiftChecksum { .. }));
+        } else {
+            panic!("Expected Reencrypt keyslot")
+        }
+    }
 }
