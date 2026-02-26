@@ -120,28 +120,48 @@ pub struct Luks2Af {
     pub hash: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Luks2AreaType {
-    Raw,
-    None,
-    Checksum,
-    Journal,
-    Datashift,
-    DatashiftJournal,
-    DatashiftChecksum,
-    #[serde(other)]
-    Unknown,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Luks2Area {
-    #[serde(rename = "type")]
-    pub area_type: Luks2AreaType,
-    pub encryption: String,
-    pub key_size: Luks2KeySize,
-    pub offset: Luks2U64,
-    pub size: Luks2U64,
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Luks2Area {
+    Raw {
+        encryption: String,
+        key_size: Luks2KeySize,
+        offset: Luks2U64,
+        size: Luks2U64,
+    },
+    None {
+        offset: Luks2U64,
+        size: Luks2U64,
+    },
+    Journal {
+        offset: Luks2U64,
+        size: Luks2U64,
+    },
+    Checksum {
+        offset: Luks2U64,
+        size: Luks2U64,
+        hash: String,
+        sector_size: u32,
+    },
+    Datashift {
+        offset: Luks2U64,
+        size: Luks2U64,
+        shift_size: Luks2U64,
+    },
+    #[serde(rename = "datashift-journal")]
+    DatashiftJournal {
+        offset: Luks2U64,
+        size: Luks2U64,
+        shift_size: Luks2U64,
+    },
+    #[serde(rename = "datashift-checksum")]
+    DatashiftChecksum {
+        offset: Luks2U64,
+        size: Luks2U64,
+        hash: String,
+        sector_size: u32,
+        shift_size: Luks2U64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,12 +255,12 @@ impl Luks2Keyslot {
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Luks2Keyslot::Luks2 { area, .. } => {
-                if area.area_type != Luks2AreaType::Raw {
+                if !matches!(area, Luks2Area::Raw { .. }) {
                     return Err("LUKS2 keyslot must have area type 'raw'".to_string());
                 }
             }
             Luks2Keyslot::Reencrypt { area, key_size, .. } => {
-                if area.area_type == Luks2AreaType::Raw {
+                if matches!(area, Luks2Area::Raw { .. }) {
                     return Err("Reencrypt keyslot cannot have area type 'raw'".to_string());
                 }
                 if key_size != "1" {
