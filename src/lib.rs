@@ -106,15 +106,6 @@ impl TryFrom<u64> for Luks2KeySize {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Luks2KeyslotType {
-    Luks2,
-    Reencrypt,
-    #[serde(other)]
-    Unknown,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Luks2AfType {
@@ -129,10 +120,24 @@ pub struct Luks2Af {
     pub hash: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Luks2AreaType {
+    Raw,
+    None,
+    Checksum,
+    Journal,
+    Datashift,
+    DatashiftJournal,
+    DatashiftChecksum,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Area {
     #[serde(rename = "type")]
-    pub area_type: String,
+    pub area_type: Luks2AreaType,
     pub encryption: String,
     pub key_size: Luks2KeySize,
     pub offset: Luks2U64,
@@ -186,16 +191,26 @@ impl From<Luks2KeyslotPriority> for i32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Luks2Keyslot {
-    #[serde(rename = "type")]
-    pub slot_type: Luks2KeyslotType,
-    pub key_size: Luks2KeySize,
-    pub priority: Option<Luks2KeyslotPriority>,
-    pub af: Luks2Af,
-    pub area: Luks2Area,
-    pub kdf: Luks2Kdf,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Luks2Keyslot {
+    Luks2 {
+        key_size: Luks2KeySize,
+        priority: Option<Luks2KeyslotPriority>,
+        af: Luks2Af,
+        area: Luks2Area,
+        kdf: Luks2Kdf,
+        #[serde(flatten)]
+        extra: HashMap<String, serde_json::Value>,
+    },
+    Reencrypt {
+        key_size: Luks2KeySize,
+        priority: Option<Luks2KeyslotPriority>,
+        af: Luks2Af,
+        area: Luks2Area,
+        kdf: Luks2Kdf,
+        #[serde(flatten)]
+        extra: HashMap<String, serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -758,11 +773,17 @@ mod tests {
         assert_eq!(metadata.config.json_size, Luks2U64(12288));
 
         let ks0 = metadata.keyslots.get("0").unwrap();
-        assert_eq!(ks0.key_size, Luks2KeySize::Size32);
-        assert!(matches!(ks0.kdf, Luks2Kdf::Argon2i { .. }));
+        let Luks2Keyslot::Luks2 { key_size, kdf, .. } = ks0 else {
+            panic!("Expected Luks2 keyslot")
+        };
+        assert_eq!(*key_size, Luks2KeySize::Size32);
+        assert!(matches!(kdf, Luks2Kdf::Argon2i { .. }));
 
         let ks1 = metadata.keyslots.get("1").unwrap();
-        assert!(matches!(ks1.kdf, Luks2Kdf::Pbkdf2 { .. }));
+        let Luks2Keyslot::Luks2 { kdf, .. } = ks1 else {
+            panic!("Expected Luks2 keyslot")
+        };
+        assert!(matches!(kdf, Luks2Kdf::Pbkdf2 { .. }));
 
         let token0 = metadata.tokens.get("0").unwrap();
         assert!(matches!(token0, Luks2Token::Keyring { .. }));
