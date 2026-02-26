@@ -190,6 +190,21 @@ impl From<Luks2KeyslotPriority> for i32 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Luks2ReencryptMode {
+    Reencrypt,
+    Encrypt,
+    Decrypt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Luks2ReencryptDirection {
+    Forward,
+    Backward,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Keyslot {
@@ -203,6 +218,8 @@ pub enum Luks2Keyslot {
         extra: HashMap<String, serde_json::Value>,
     },
     Reencrypt {
+        mode: Luks2ReencryptMode,
+        direction: Luks2ReencryptDirection,
         key_size: String,
         priority: Option<Luks2KeyslotPriority>,
         af: Luks2Af,
@@ -856,5 +873,41 @@ mod tests {
                 .to_string()
                 .contains("LUKS2 keyslot must have area type 'raw'")
         );
+    }
+
+    #[test]
+    fn test_parse_reencrypt_keyslot() {
+        let json_data = r#"{
+            "keyslots": {
+                "0": {
+                    "type": "reencrypt",
+                    "mode": "reencrypt",
+                    "direction": "forward",
+                    "key_size": "1",
+                    "priority": 1,
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "none", "encryption": "aes-xts-plain64", "key_size": 32, "offset": "32768", "size": "131072" },
+                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "salt" }
+                }
+            },
+            "tokens": {},
+            "segments": {},
+            "digests": {},
+            "config": { "json_size": "12288", "keyslots_size": "4161536" }
+        }"#;
+        let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
+        let slot = metadata.keyslots.get("0").unwrap();
+        let Luks2Keyslot::Reencrypt {
+            mode,
+            direction,
+            key_size,
+            ..
+        } = slot
+        else {
+            panic!("Expected Reencrypt keyslot")
+        };
+        assert_eq!(*mode, Luks2ReencryptMode::Reencrypt);
+        assert_eq!(*direction, Luks2ReencryptDirection::Forward);
+        assert_eq!(key_size, "1");
     }
 }
