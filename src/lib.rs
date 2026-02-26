@@ -115,10 +115,16 @@ pub enum Luks2KeyslotType {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Luks2AfType {
+    Luks1,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Af {
     #[serde(rename = "type")]
-    pub af_type: String,
+    pub af_type: Luks2AfType,
     pub stripes: u32,
     pub hash: String,
 }
