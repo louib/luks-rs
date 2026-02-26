@@ -149,12 +149,42 @@ pub enum Luks2Kdf {
     },
 }
 
+/// The priority of a LUKS2 keyslot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "i32", into = "i32")]
+pub enum Luks2KeyslotPriority {
+    /// The keyslot should be ignored except if explicitly stated
+    Ignore = 0,
+    /// Normal priority.
+    Normal = 1,
+    /// High priority.
+    High = 2,
+}
+
+impl TryFrom<i32> for Luks2KeyslotPriority {
+    type Error = String;
+    fn try_from(val: i32) -> Result<Self, Self::Error> {
+        match val {
+            0 => Ok(Luks2KeyslotPriority::Ignore),
+            1 => Ok(Luks2KeyslotPriority::Normal),
+            2 => Ok(Luks2KeyslotPriority::High),
+            _ => Err(format!("Unsupported keyslot priority: {}", val)),
+        }
+    }
+}
+
+impl From<Luks2KeyslotPriority> for i32 {
+    fn from(val: Luks2KeyslotPriority) -> Self {
+        val as i32
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Keyslot {
     #[serde(rename = "type")]
     pub slot_type: Luks2KeyslotType,
     pub key_size: Luks2KeySize,
-    pub priority: Option<i32>,
+    pub priority: Option<Luks2KeyslotPriority>,
     pub af: Luks2Af,
     pub area: Luks2Area,
     pub kdf: Luks2Kdf,
