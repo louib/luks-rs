@@ -64,22 +64,109 @@ pub enum Luks2KeyslotType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Luks2Af {
+    #[serde(rename = "type")]
+    pub af_type: String,
+    pub stripes: u32,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Luks2Area {
+    #[serde(rename = "type")]
+    pub area_type: String,
+    pub encryption: String,
+    pub key_size: usize,
+    pub offset: String,
+    pub size: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Luks2Kdf {
+    Argon2i {
+        time: u32,
+        memory: u32,
+        cpus: u32,
+        salt: String,
+    },
+    Pbkdf2 {
+        hash: String,
+        iterations: u32,
+        salt: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Keyslot {
     #[serde(rename = "type")]
     pub slot_type: Luks2KeyslotType,
     pub key_size: usize,
     pub priority: Option<i32>,
+    pub af: Luks2Af,
+    pub area: Luks2Area,
+    pub kdf: Luks2Kdf,
     #[serde(flatten)]
-    pub extra: serde_json::Value,
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Luks2Token {
+    #[serde(rename = "luks2-keyring")]
+    Keyring {
+        keyslots: Vec<String>,
+        key_description: String,
+        #[serde(flatten)]
+        extra: HashMap<String, serde_json::Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Luks2Segment {
+    Crypt {
+        offset: String,
+        iv_tweak: String,
+        size: String,
+        encryption: String,
+        sector_size: u32,
+        #[serde(flatten)]
+        extra: HashMap<String, serde_json::Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Luks2Digest {
+    Pbkdf2 {
+        keyslots: Vec<String>,
+        segments: Vec<String>,
+        hash: String,
+        iterations: u32,
+        salt: String,
+        digest: String,
+        #[serde(flatten)]
+        extra: HashMap<String, serde_json::Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Luks2Config {
+    pub json_size: String,
+    pub keyslots_size: String,
+    pub flags: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Metadata {
     pub keyslots: HashMap<String, Luks2Keyslot>,
-    pub tokens: serde_json::Value,
-    pub segments: serde_json::Value,
-    pub digests: serde_json::Value,
-    pub config: serde_json::Value,
+    pub tokens: HashMap<String, Luks2Token>,
+    pub segments: HashMap<String, Luks2Segment>,
+    pub digests: HashMap<String, Luks2Digest>,
+    pub config: Luks2Config,
 }
 
 /// A LUKS device UUID.
@@ -299,7 +386,16 @@ mod tests {
     #[test]
     fn test_detect_luks2_with_checksum() {
         let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
-        let json_data = r#"{"keyslots":{},"tokens":{},"segments":{},"digests":{},"config":{}}"#;
+        let json_data = r#"{
+            "keyslots": {},
+            "tokens": {},
+            "segments": {},
+            "digests": {},
+            "config": {
+                "json_size": "12288",
+                "keyslots_size": "4161536"
+            }
+        }"#;
         let hdr_size = LUKS2_BINARY_HEADER_SIZE as u64 + json_data.len() as u64;
 
         {
@@ -360,13 +456,30 @@ mod tests {
         let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
         let json_data = r#"{
             "keyslots": {
-                "0": { "type": "luks2", "key_size": 64, "priority": 1 },
-                "1": { "type": "luks2", "key_size": 64, "priority": 1 }
+                "0": {
+                    "type": "luks2",
+                    "key_size": 64,
+                    "priority": 1,
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "raw", "encryption": "aes-xts-plain64", "key_size": 64, "offset": "32768", "size": "131072" },
+                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "z6vz4xK7cjan92rDA5JF8O6Jk2HouV0O8DMB6GlztVk=" }
+                },
+                "1": {
+                    "type": "luks2",
+                    "key_size": 64,
+                    "priority": 1,
+                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                    "area": { "type": "raw", "encryption": "aes-xts-plain64", "key_size": 64, "offset": "163840", "size": "131072" },
+                    "kdf": { "type": "pbkdf2", "hash": "sha256", "iterations": 1774240, "salt": "vWcwY3rx2fKpXW2Q6oSCNf8j5bvdJyEzB6BNXECGDsI=" }
+                }
             },
             "tokens": {},
             "segments": {},
             "digests": {},
-            "config": {}
+            "config": {
+                "json_size": "12288",
+                "keyslots_size": "4161536"
+            }
         }"#;
         let hdr_size = LUKS2_BINARY_HEADER_SIZE as u64 + json_data.len() as u64;
 
@@ -420,5 +533,122 @@ mod tests {
         assert!(LuksUuid::from_str("").is_err());
         assert!(LuksUuid::from_str("invalid-char!").is_err());
         assert!(LuksUuid::from_str(&"a".repeat(40)).is_err());
+    }
+
+    #[test]
+    fn test_parse_full_example_json() {
+        let json_data = r#"{
+            "keyslots": {
+                "0": {
+                    "type": "luks2",
+                    "key_size": 32,
+                    "af": {
+                        "type": "luks1",
+                        "stripes": 4000,
+                        "hash": "sha256"
+                    },
+                    "area": {
+                        "type": "raw",
+                        "encryption": "aes-xts-plain64",
+                        "key_size": 32,
+                        "offset": "32768",
+                        "size": "131072"
+                    },
+                    "kdf": {
+                        "type": "argon2i",
+                        "time": 4,
+                        "memory": 235980,
+                        "cpus": 2,
+                        "salt": "z6vz4xK7cjan92rDA5JF8O6Jk2HouV0O8DMB6GlztVk="
+                    }
+                },
+                "1": {
+                    "type": "luks2",
+                    "key_size": 32,
+                    "af": {
+                        "type": "luks1",
+                        "stripes": 4000,
+                        "hash": "sha256"
+                    },
+                    "area": {
+                        "type": "raw",
+                        "encryption": "aes-xts-plain64",
+                        "key_size": 32,
+                        "offset": "163840",
+                        "size": "131072"
+                    },
+                    "kdf": {
+                        "type": "pbkdf2",
+                        "hash": "sha256",
+                        "iterations": 1774240,
+                        "salt": "vWcwY3rx2fKpXW2Q6oSCNf8j5bvdJyEzB6BNXECGDsI="
+                    }
+                }
+            },
+            "tokens": {
+                "0": {
+                    "type": "luks2-keyring",
+                    "keyslots": [
+                        "1"
+                    ],
+                    "key_description": "MyKeyringKeyID"
+                }
+            },
+            "segments": {
+                "0": {
+                    "type": "crypt",
+                    "offset": "4194304",
+                    "iv_tweak": "0",
+                    "size": "dynamic",
+                    "encryption": "aes-xts-plain64",
+                    "sector_size": 512
+                }
+            },
+            "digests": {
+                "0": {
+                    "type": "pbkdf2",
+                    "keyslots": [
+                        "0",
+                        "1"
+                    ],
+                    "segments": [
+                        "0"
+                    ],
+                    "hash": "sha256",
+                    "iterations": 110890,
+                    "salt": "G8gqtKhS96IbogHyJLO+t9kmjLkx+DM3HHJqQtgc2Dk=",
+                    "digest": "C9JWko5m+oYmjg6R0t/98cGGzLr/4UaG3hImSJMivfc="
+                }
+            },
+            "config": {
+                "json_size": "12288",
+                "keyslots_size": "4161536",
+                "flags": [
+                    "allow-discards"
+                ]
+            }
+        }"#;
+        let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
+        assert_eq!(metadata.keyslots.len(), 2);
+        assert_eq!(metadata.tokens.len(), 1);
+        assert_eq!(metadata.segments.len(), 1);
+        assert_eq!(metadata.digests.len(), 1);
+        assert_eq!(metadata.config.json_size, "12288");
+
+        let ks0 = metadata.keyslots.get("0").unwrap();
+        assert_eq!(ks0.key_size, 32);
+        assert!(matches!(ks0.kdf, Luks2Kdf::Argon2i { .. }));
+
+        let ks1 = metadata.keyslots.get("1").unwrap();
+        assert!(matches!(ks1.kdf, Luks2Kdf::Pbkdf2 { .. }));
+
+        let token0 = metadata.tokens.get("0").unwrap();
+        assert!(matches!(token0, Luks2Token::Keyring { .. }));
+
+        let segment0 = metadata.segments.get("0").unwrap();
+        assert!(matches!(segment0, Luks2Segment::Crypt { .. }));
+
+        let digest0 = metadata.digests.get("0").unwrap();
+        assert!(matches!(digest0, Luks2Digest::Pbkdf2 { .. }));
     }
 }
