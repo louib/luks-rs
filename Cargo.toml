@@ -1,6 +1,6 @@
 [package]
 name = "luks"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "Pure-Rust Library for the Linux Unified Key Setup"
 repository = "https://github.com/louib/luks-rs"
