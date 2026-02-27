@@ -291,17 +291,25 @@ impl Luks2Keyslot {
     /// Validates the keyslot
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Luks2Keyslot::Luks2 { area, .. } => {
+            Luks2Keyslot::Luks2 { area, af, .. } => {
                 if !matches!(area, Luks2Area::Raw { .. }) {
                     return Err("LUKS2 keyslot must have area type 'raw'".to_string());
                 }
+                if af.stripes != 4000 {
+                    return Err("AF stripes must be 4000".to_string());
+                }
             }
-            Luks2Keyslot::Reencrypt { area, key_size, .. } => {
+            Luks2Keyslot::Reencrypt {
+                area, key_size, af, ..
+            } => {
                 if matches!(area, Luks2Area::Raw { .. }) {
                     return Err("Reencrypt keyslot cannot have area type 'raw'".to_string());
                 }
                 if key_size != "1" {
                     return Err("Reencrypt keyslot must have key_size 1".to_string());
+                }
+                if af.stripes != 4000 {
+                    return Err("AF stripes must be 4000".to_string());
                 }
             }
         }
