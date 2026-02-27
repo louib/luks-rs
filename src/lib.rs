@@ -7,6 +7,10 @@ use std::io::{Read, Seek};
 use std::str::FromStr;
 use thiserror::Error;
 
+pub mod kdf;
+
+pub use kdf::derive_key;
+
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
 pub const LUKS_MAGIC: [u8; 6] = *b"LUKS\xBA\xBE";
 
@@ -57,6 +61,8 @@ pub enum LuksError {
     InvalidChecksum { expected: String, actual: String },
     #[error("Unsupported checksum algorithm: {0}")]
     UnsupportedChecksumAlg(String),
+    #[error("KDF error: {0}")]
+    Kdf(String),
 }
 
 /// A 64-bit unsigned integer that is represented as a decimal string in JSON.
