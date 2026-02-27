@@ -95,6 +95,15 @@ impl From<Luks2KeySize> for u64 {
     }
 }
 
+impl fmt::Display for Luks2KeySize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Luks2KeySize::Size32 => write!(f, "32"),
+            Luks2KeySize::Size64 => write!(f, "64"),
+        }
+    }
+}
+
 impl TryFrom<u64> for Luks2KeySize {
     type Error = String;
     fn try_from(val: u64) -> Result<Self, Self::Error> {
@@ -124,6 +133,14 @@ pub struct Luks2Af {
 pub enum Luks2AreaEncryption {
     #[serde(rename = "aes-xts-plain64")]
     AesXtsPlain64,
+}
+
+impl fmt::Display for Luks2AreaEncryption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Luks2AreaEncryption::AesXtsPlain64 => write!(f, "aes-xts-plain64"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

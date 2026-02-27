@@ -75,8 +75,8 @@ fn print_area(area: &luks::Luks2Area) {
             size,
         } => {
             println!("        Type:       raw");
-            println!("        Encryption: {:?}", encryption);
-            println!("        Key Size:   {:?}", key_size);
+            println!("        Encryption: {}", encryption);
+            println!("        Key Size:   {}", key_size);
             println!("        Offset:     {}", offset.0);
             println!("        Size:       {}", size.0);
         }
