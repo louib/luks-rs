@@ -1,6 +1,8 @@
 # luks-rs
 
 [![Crates.io](https://img.shields.io/crates/v/luks.svg)](https://crates.io/crates/luks)
+[![Documentation](https://docs.rs/luks/badge.svg)](https://docs.rs/luks/)
+[![Build Status](https://github.com/louib/luks-rs/actions/workflows/on-merge.yaml/badge.svg?branch=main)](https://github.com/louib/luks-rs/actions/workflows/on-merge.yaml)
 
 Pure-Rust Library for the Linux Unified Key Setup
 
