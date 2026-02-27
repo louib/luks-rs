@@ -49,8 +49,28 @@ pub fn derive_key(kdf: &Luks2Kdf, passphrase: &[u8], key_size: usize) -> Result<
 
             Ok(output)
         }
-        Luks2Kdf::Pbkdf2 { .. } => Err(LuksError::UnsupportedChecksumAlg(
-            "PBKDF2 derivation not yet implemented".to_string(),
-        )),
+        Luks2Kdf::Pbkdf2 {
+            hash,
+            iterations,
+            salt,
+            ..
+        } => {
+            let salt_bytes = general_purpose::STANDARD
+                .decode(salt)
+                .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
+
+            let mut output = vec![0u8; key_size];
+
+            if hash == "sha256" {
+                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(passphrase, &salt_bytes, *iterations, &mut output)
+                    .map_err(|e| LuksError::Kdf(format!("PBKDF2 error: {}", e)))?;
+                Ok(output)
+            } else {
+                Err(LuksError::UnsupportedChecksumAlg(format!(
+                    "PBKDF2 with hash {} is not supported",
+                    hash
+                )))
+            }
+        }
     }
 }
