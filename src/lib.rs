@@ -120,11 +120,17 @@ pub struct Luks2Af {
     pub hash: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Luks2AreaEncryption {
+    #[serde(rename = "aes-xts-plain64")]
+    AesXtsPlain64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Luks2Area {
     Raw {
-        encryption: String,
+        encryption: Luks2AreaEncryption,
         key_size: Luks2KeySize,
         offset: Luks2U64,
         size: Luks2U64,
