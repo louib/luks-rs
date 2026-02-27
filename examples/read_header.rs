@@ -29,19 +29,25 @@ fn main() {
             for (id, slot) in &h.metadata.keyslots {
                 match slot {
                     luks::Luks2Keyslot::Luks2 {
-                        priority, area, kdf, ..
+                        priority,
+                        af,
+                        area,
+                        kdf,
+                        ..
                     } => {
                         println!("    Keyslot {}:", id);
                         println!("      Type:         luks2");
                         if let Some(p) = priority {
                             println!("      Priority:     {:?}", p);
                         }
+                        print_af(af);
                         print_area(area);
                         print_kdf(kdf);
                     }
                     luks::Luks2Keyslot::Reencrypt {
                         mode,
                         priority,
+                        af,
                         area,
                         kdf,
                         ..
@@ -52,6 +58,7 @@ fn main() {
                         if let Some(p) = priority {
                             println!("      Priority:     {:?}", p);
                         }
+                        print_af(af);
                         print_area(area);
                         print_kdf(kdf);
                     }
@@ -63,6 +70,13 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn print_af(af: &luks::Luks2Af) {
+    println!("      AF:");
+    println!("        Type:       {}", af.af_type);
+    println!("        Stripes:    {}", af.stripes);
+    println!("        Hash:       {}", af.hash);
 }
 
 fn print_area(area: &luks::Luks2Area) {

@@ -121,6 +121,14 @@ pub enum Luks2AfType {
     Luks1,
 }
 
+impl fmt::Display for Luks2AfType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Luks2AfType::Luks1 => write!(f, "luks1"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Af {
     #[serde(rename = "type")]
