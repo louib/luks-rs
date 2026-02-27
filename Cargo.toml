@@ -18,12 +18,22 @@ include = [
 
 [features]
 _open = []
+interactive = ["rpassword"]
 
 [[bin]]
 name = "create_fixture"
 required-features = ["_open"]
 
+[[bin]]
+name = "verify_fixture"
+required-features = ["_open"]
+
+[[example]]
+name = "verify_passphrase"
+required-features = ["_open", "interactive"]
+
 [dependencies]
+aes = "0.8"
 argon2 = "0.5"
 base64 = "0.22"
 byteorder = "1.5"
@@ -33,3 +43,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
+xts-mode = "0.5"
+rpassword = { version = "7", optional = true }
+
+[dev-dependencies]
+rand = "0.8"

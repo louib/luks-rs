@@ -1,4 +1,4 @@
-use luks::{LuksDevice, LuksHeader};
+use luks::LuksHeader;
 use std::env;
 use std::fs::File;
 use std::process;
