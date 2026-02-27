@@ -16,6 +16,13 @@ include = [
   "LICENSE",
 ]
 
+[features]
+_open = []
+
+[[bin]]
+name = "create_fixture"
+required-features = ["_open"]
+
 [dependencies]
 argon2 = "0.5"
 base64 = "0.22"

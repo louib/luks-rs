@@ -3,13 +3,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use thiserror::Error;
 
 pub mod kdf;
 
 pub use kdf::derive_key;
+
+#[cfg(feature = "_open")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LuksDevice {
+    pub header: LuksHeader,
+    pub keyslots: HashMap<String, Vec<u8>>,
+}
 
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
 pub const LUKS_MAGIC: [u8; 6] = *b"LUKS\xBA\xBE";
@@ -206,6 +213,32 @@ pub enum Luks2Area {
     },
 }
 
+impl Luks2Area {
+    pub fn offset(&self) -> u64 {
+        match self {
+            Luks2Area::Raw { offset, .. } => offset.0,
+            Luks2Area::None { offset, .. } => offset.0,
+            Luks2Area::Journal { offset, .. } => offset.0,
+            Luks2Area::Checksum { offset, .. } => offset.0,
+            Luks2Area::Datashift { offset, .. } => offset.0,
+            Luks2Area::DatashiftJournal { offset, .. } => offset.0,
+            Luks2Area::DatashiftChecksum { offset, .. } => offset.0,
+        }
+    }
+
+    pub fn size(&self) -> u64 {
+        match self {
+            Luks2Area::Raw { size, .. } => size.0,
+            Luks2Area::None { size, .. } => size.0,
+            Luks2Area::Journal { size, .. } => size.0,
+            Luks2Area::Checksum { size, .. } => size.0,
+            Luks2Area::Datashift { size, .. } => size.0,
+            Luks2Area::DatashiftJournal { size, .. } => size.0,
+            Luks2Area::DatashiftChecksum { size, .. } => size.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Kdf {
@@ -299,6 +332,13 @@ pub enum Luks2Keyslot {
 }
 
 impl Luks2Keyslot {
+    pub fn area(&self) -> &Luks2Area {
+        match self {
+            Luks2Keyslot::Luks2 { area, .. } => area,
+            Luks2Keyslot::Reencrypt { area, .. } => area,
+        }
+    }
+
     /// Validates the keyslot
 
     pub fn validate(&self) -> Result<(), String> {
@@ -489,19 +529,41 @@ impl PartialEq<&str> for LuksUuid {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Header {
     pub version: u16,
     pub hdr_size: u64,
     pub seqid: u64,
     pub label: String,
     pub checksum_alg: String,
+    #[serde(with = "serde_arrays")]
     pub salt: [u8; LUKS2_SALT_SIZE],
     pub uuid: LuksUuid,
     pub subsystem: String,
     pub hdr_offset: u64,
+    #[serde(with = "serde_arrays")]
     pub checksum: [u8; LUKS2_CHECKSUM_SIZE],
     pub metadata: Luks2Metadata,
+}
+
+mod serde_arrays {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        bytes.as_slice().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v: Vec<u8> = Vec::deserialize(deserializer)?;
+        v.try_into()
+            .map_err(|_| serde::de::Error::custom("expected array of length 64"))
+    }
 }
 
 impl Luks2Header {
@@ -511,7 +573,7 @@ impl Luks2Header {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LuksHeader {
     V1, // Placeholder for LUKS1
     V2(Luks2Header),
@@ -524,6 +586,27 @@ impl LuksHeader {
             LuksHeader::V1 => 8, // LUKS1 always has 8 keyslot entries in the header
             LuksHeader::V2(h) => h.num_keyslots(),
         }
+    }
+
+    #[cfg(feature = "_open")]
+    pub fn open<R: Read + Seek>(mut reader: R) -> Result<LuksDevice, LuksError> {
+        let header = Self::from_reader(&mut reader)?;
+        let mut keyslots = HashMap::new();
+
+        match &header {
+            LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
+            LuksHeader::V2(h) => {
+                for (id, slot) in &h.metadata.keyslots {
+                    let area = slot.area();
+                    let mut data = vec![0u8; area.size() as usize];
+                    reader.seek(SeekFrom::Start(area.offset()))?;
+                    reader.read_exact(&mut data)?;
+                    keyslots.insert(id.clone(), data);
+                }
+            }
+        }
+
+        Ok(LuksDevice { header, keyslots })
     }
 }
 
