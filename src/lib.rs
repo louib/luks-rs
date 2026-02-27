@@ -3,10 +3,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 use std::str::FromStr;
 use thiserror::Error;
 
+#[cfg(feature = "_open")]
+use {
+    aes::cipher::KeyInit,
+    base64::Engine as _,
+    sha2::Sha512,
+    std::io::SeekFrom,
+    xts_mode::{Xts128, get_tweak_default},
+};
+
+pub mod af;
 pub mod kdf;
 
 pub use kdf::derive_key;
@@ -16,6 +26,150 @@ pub use kdf::derive_key;
 pub struct LuksDevice {
     pub header: LuksHeader,
     pub keyslots: HashMap<String, Vec<u8>>,
+}
+
+#[cfg(feature = "_open")]
+impl LuksDevice {
+    /// Verifies that a passphrase can decrypt a specific keyslot.
+    pub fn verify(&self, keyslot_id: &str, passphrase: &[u8]) -> Result<bool, LuksError> {
+        let h2 = match &self.header {
+            LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
+            LuksHeader::V2(h) => h,
+        };
+
+        let keyslot = h2
+            .metadata
+            .keyslots
+            .get(keyslot_id)
+            .ok_or_else(|| LuksError::InvalidHeader(format!("Keyslot {} not found", keyslot_id)))?;
+
+        // Find the digest associated with this keyslot
+        let (_digest_id, digest) = h2
+            .metadata
+            .digests
+            .iter()
+            .find(|(_, d)| match d {
+                Luks2Digest::Pbkdf2 { keyslots, .. } => keyslots.contains(&keyslot_id.to_string()),
+            })
+            .ok_or_else(|| LuksError::InvalidHeader(format!("No digest found for keyslot {}", keyslot_id)))?;
+
+        match digest {
+            Luks2Digest::Pbkdf2 {
+                hash,
+                salt: digest_salt,
+                digest: expected_digest,
+                iterations: digest_iterations,
+                ..
+            } => {
+                let (kdf, key_size, area, af) = match keyslot {
+                    Luks2Keyslot::Luks2 {
+                        kdf,
+                        key_size,
+                        area,
+                        af,
+                        ..
+                    } => (kdf, u64::from(*key_size), area, af),
+                    Luks2Keyslot::Reencrypt { .. } => {
+                        return Err(LuksError::Kdf(
+                            "Verification for reencrypt keyslots not yet supported".to_string(),
+                        ));
+                    }
+                };
+
+                let Luks2Area::Raw { encryption, .. } = area else {
+                    return Err(LuksError::InvalidHeader(
+                        "LUKS2 keyslot must have area type 'raw'".to_string(),
+                    ));
+                };
+
+                // 1. Derive the keyslot key from the passphrase
+                let keyslot_key = crate::kdf::derive_key(kdf, passphrase, &h2.salt, key_size as usize)?;
+
+                // 2. Get the encrypted data from the captured keyslots
+                let encrypted_data = self.keyslots.get(keyslot_id).ok_or_else(|| {
+                    LuksError::InvalidHeader(format!("Data for keyslot {} not captured", keyslot_id))
+                })?;
+
+                // 3. Decrypt the area
+                if *encryption != Luks2AreaEncryption::AesXtsPlain64 {
+                    return Err(LuksError::UnsupportedChecksumAlg(format!(
+                        "Area encryption {} is not supported",
+                        encryption
+                    )));
+                }
+
+                let mut decrypted_data = encrypted_data.clone();
+                if key_size == 32 {
+                    let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..16])
+                        .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+                    let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[16..32])
+                        .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+                    let xts = Xts128::new(cipher_1, cipher_2);
+
+                    for (i, chunk) in decrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+                        xts.decrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+                    }
+                } else if key_size == 64 {
+                    let cipher_1 = aes::Aes256::new_from_slice(&keyslot_key[0..32])
+                        .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+                    let cipher_2 = aes::Aes256::new_from_slice(&keyslot_key[32..64])
+                        .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+                    let xts = Xts128::new(cipher_1, cipher_2);
+
+                    for (i, chunk) in decrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+                        xts.decrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+                    }
+                } else {
+                    return Err(LuksError::Kdf(format!(
+                        "Unsupported key size {} for AES-XTS",
+                        key_size
+                    )));
+                }
+
+                // 4. & 5. Decode digest and merge AF stripes to get the volume key
+                let kdf_digest_salt = base64::engine::general_purpose::STANDARD
+                    .decode(digest_salt)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64 in digest: {}", e)))?;
+
+                let expected_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(expected_digest)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid digest base64 in digest: {}", e)))?;
+
+                let volume_key = crate::af::merge(
+                    &decrypted_data[0..(key_size as u64 * af.stripes as u64) as usize],
+                    &af.hash,
+                    af.stripes,
+                    key_size as usize,
+                )?;
+
+                let mut verification_output = vec![0u8; expected_bytes.len()];
+                if hash == HASH_SHA256 {
+                    pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(
+                        &volume_key,
+                        &kdf_digest_salt,
+                        *digest_iterations,
+                        &mut verification_output,
+                    )
+                    .map_err(|e| LuksError::Kdf(format!("PBKDF2 SHA256 error: {}", e)))?;
+                } else if hash == HASH_SHA512 {
+                    pbkdf2::pbkdf2::<hmac::Hmac<Sha512>>(
+                        &volume_key,
+                        &kdf_digest_salt,
+                        *digest_iterations,
+                        &mut verification_output,
+                    )
+                    .map_err(|e| LuksError::Kdf(format!("PBKDF2 SHA512 error: {}", e)))?;
+                } else {
+                    return Err(LuksError::UnsupportedChecksumAlg(format!(
+                        "Digest hash {} is not supported",
+                        hash
+                    )));
+                }
+
+                Ok(verification_output == expected_bytes)
+            }
+        }
+    }
 }
 
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
@@ -41,6 +195,16 @@ pub const LUKS2_CHECKSUM_SIZE: usize = 64;
 
 /// The size of a SHA-256 digest in bytes.
 pub const SHA256_DIGEST_SIZE: usize = 32;
+/// The size of a SHA-512 digest in bytes.
+pub const SHA512_DIGEST_SIZE: usize = 64;
+
+/// The standard sector size in bytes.
+pub const SECTOR_SIZE: usize = 512;
+
+/// SHA-256 hash algorithm identifier.
+pub const HASH_SHA256: &str = "sha256";
+/// SHA-512 hash algorithm identifier.
+pub const HASH_SHA512: &str = "sha512";
 
 /// The offset in bytes where the LUKS2 checksum field begins.
 pub const LUKS2_CHECKSUM_OFFSET: usize = 448;
@@ -315,8 +479,6 @@ pub enum Luks2Keyslot {
         af: Luks2Af,
         area: Luks2Area,
         kdf: Luks2Kdf,
-        #[serde(flatten)]
-        extra: HashMap<String, serde_json::Value>,
     },
     Reencrypt {
         mode: Luks2ReencryptMode,
@@ -326,8 +488,6 @@ pub enum Luks2Keyslot {
         af: Luks2Af,
         area: Luks2Area,
         kdf: Luks2Kdf,
-        #[serde(flatten)]
-        extra: HashMap<String, serde_json::Value>,
     },
 }
 
@@ -340,36 +500,30 @@ impl Luks2Keyslot {
     }
 
     /// Validates the keyslot
-
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Luks2Keyslot::Luks2 { area, af, .. } => {
                 if !matches!(area, Luks2Area::Raw { .. }) {
                     return Err("LUKS2 keyslot must have area type 'raw'".to_string());
                 }
-
                 if af.stripes != LUKS1_AF_STRIPES {
                     return Err(format!("AF stripes must be {}", LUKS1_AF_STRIPES));
                 }
             }
-
             Luks2Keyslot::Reencrypt {
                 area, key_size, af, ..
             } => {
                 if matches!(area, Luks2Area::Raw { .. }) {
                     return Err("Reencrypt keyslot cannot have area type 'raw'".to_string());
                 }
-
                 if key_size != "1" {
                     return Err("Reencrypt keyslot must have key_size 1".to_string());
                 }
-
                 if af.stripes != LUKS1_AF_STRIPES {
                     return Err(format!("AF stripes must be {}", LUKS1_AF_STRIPES));
                 }
             }
         }
-
         Ok(())
     }
 }
@@ -381,8 +535,6 @@ pub enum Luks2Token {
     Keyring {
         keyslots: Vec<String>,
         key_description: String,
-        #[serde(flatten)]
-        extra: HashMap<String, serde_json::Value>,
     },
 }
 
@@ -429,8 +581,6 @@ pub enum Luks2Segment {
         size: Luks2SegmentSize,
         encryption: String,
         sector_size: u32,
-        #[serde(flatten)]
-        extra: HashMap<String, serde_json::Value>,
     },
 }
 
@@ -444,8 +594,6 @@ pub enum Luks2Digest {
         iterations: u32,
         salt: String,
         digest: String,
-        #[serde(flatten)]
-        extra: HashMap<String, serde_json::Value>,
     },
 }
 
@@ -454,8 +602,6 @@ pub struct Luks2Config {
     pub json_size: Luks2U64,
     pub keyslots_size: Luks2U64,
     pub flags: Option<Vec<String>>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
 }
 
 fn deserialize_and_validate_keyslots<'de, D>(deserializer: D) -> Result<HashMap<String, Luks2Keyslot>, D::Error>
