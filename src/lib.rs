@@ -36,6 +36,11 @@ pub const LUKS2_CHECKSUM_OFFSET: usize = 448;
 /// The size of the LUKS2 binary header area in bytes.
 pub const LUKS2_BINARY_HEADER_SIZE: usize = 4096;
 
+/// The number of anti-forensic stripes used by the LUKS1 AF feature.
+///
+/// For historical reasons, this value is always 4000.
+pub const LUKS1_AF_STRIPES: u32 = 4000;
+
 #[derive(Error, Debug)]
 pub enum LuksError {
     #[error("IO error: {0}")]
@@ -289,30 +294,36 @@ pub enum Luks2Keyslot {
 
 impl Luks2Keyslot {
     /// Validates the keyslot
+
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Luks2Keyslot::Luks2 { area, af, .. } => {
                 if !matches!(area, Luks2Area::Raw { .. }) {
                     return Err("LUKS2 keyslot must have area type 'raw'".to_string());
                 }
-                if af.stripes != 4000 {
-                    return Err("AF stripes must be 4000".to_string());
+
+                if af.stripes != LUKS1_AF_STRIPES {
+                    return Err(format!("AF stripes must be {}", LUKS1_AF_STRIPES));
                 }
             }
+
             Luks2Keyslot::Reencrypt {
                 area, key_size, af, ..
             } => {
                 if matches!(area, Luks2Area::Raw { .. }) {
                     return Err("Reencrypt keyslot cannot have area type 'raw'".to_string());
                 }
+
                 if key_size != "1" {
                     return Err("Reencrypt keyslot must have key_size 1".to_string());
                 }
-                if af.stripes != 4000 {
-                    return Err("AF stripes must be 4000".to_string());
+
+                if af.stripes != LUKS1_AF_STRIPES {
+                    return Err(format!("AF stripes must be {}", LUKS1_AF_STRIPES));
                 }
             }
         }
+
         Ok(())
     }
 }
