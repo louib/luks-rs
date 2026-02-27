@@ -173,6 +173,12 @@ pub enum Luks2Kdf {
         cpus: u32,
         salt: String,
     },
+    Argon2id {
+        time: u32,
+        memory: u32,
+        cpus: u32,
+        salt: String,
+    },
     Pbkdf2 {
         hash: String,
         iterations: u32,
@@ -990,5 +996,38 @@ mod tests {
         } else {
             panic!("Expected Reencrypt keyslot")
         }
+    }
+
+    #[test]
+    fn test_parse_argon2id_kdf() {
+        let json_data = r#"{
+                    "keyslots": {
+                        "0": {
+                            "type": "luks2",
+                            "key_size": 32,
+                            "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
+                            "area": { "type": "raw", "encryption": "aes-xts-plain64", "key_size": 32, "offset": "32768", "size": "131072" },
+                            "kdf": { "type": "argon2id", "time": 4, "memory": 235980, "cpus": 2, "salt": "salt" }
+                        }
+                    },
+                    "tokens": {},
+                    "segments": {},
+                    "digests": {},
+                    "config": { "json_size": "12288", "keyslots_size": "4161536" }
+                }"#;
+        let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
+        let slot = metadata.keyslots.get("0").unwrap();
+        let Luks2Keyslot::Luks2 { kdf, .. } = slot else {
+            panic!("Expected Luks2 keyslot")
+        };
+        assert!(matches!(
+            kdf,
+            Luks2Kdf::Argon2id {
+                time: 4,
+                memory: 235980,
+                cpus: 2,
+                ..
+            }
+        ));
     }
 }
