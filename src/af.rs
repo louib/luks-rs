@@ -129,7 +129,7 @@ fn hash_buf(hash_alg: &str, src: &[u8], iv: u32) -> Result<Vec<u8>, LuksError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::RngCore;
+    use rand::RngExt;
 
     #[test]
     fn test_af_roundtrip() {
@@ -139,7 +139,7 @@ mod tests {
         let hash_alg = "sha256";
 
         let mut random_stripes = vec![0u8; block_size * (stripes - 1) as usize];
-        rand::thread_rng().fill_bytes(&mut random_stripes);
+        rand::rng().fill(&mut random_stripes[..]);
 
         let split_data = split(&data, hash_alg, stripes, block_size, random_stripes).expect("Split failed");
         let merged_data = merge(&split_data, hash_alg, stripes, block_size).expect("Merge failed");
