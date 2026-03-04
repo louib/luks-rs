@@ -13,6 +13,9 @@ use {
     base64::Engine as _,
     sha2::Sha512,
     std::io::SeekFrom,
+    std::io::Write,
+    std::path::Path,
+    std::process::{Command, Stdio},
     xts_mode::{Xts128, get_tweak_default},
 };
 
@@ -182,6 +185,78 @@ impl LuksDevice {
             key_size as usize,
         )
     }
+
+    /// Maps the LUKS device using dmsetup.
+    pub fn map_with_dmsetup(
+        &self,
+        name: &str,
+        volume_key: &[u8],
+        backing_device: &Path,
+    ) -> Result<(), LuksError> {
+        let h2 = match &self.header {
+            LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
+            LuksHeader::V2(h) => h,
+        };
+
+        // Find the crypt segment
+        let segment = h2
+            .metadata
+            .segments
+            .iter()
+            .find_map(|(_, s)| match s {
+                Luks2Segment::Crypt { .. } => Some(s),
+            })
+            .ok_or_else(|| LuksError::InvalidHeader("No crypt segment found".to_string()))?;
+
+        let Luks2Segment::Crypt {
+            offset,
+            iv_tweak,
+            size,
+            encryption,
+            ..
+        } = segment;
+
+        // Calculate sectors
+        let num_sectors = match size {
+            Luks2SegmentSize::U64(s) => s / SECTOR_SIZE as u64,
+            Luks2SegmentSize::Dynamic => {
+                let mut file = std::fs::File::open(backing_device)?;
+                let total_size = file.seek(SeekFrom::End(0))?;
+                (total_size - offset.0) / SECTOR_SIZE as u64
+            }
+        };
+
+        // Construct the table string
+        // Table format: <start> <length> <target_type> <cipher> <key> <iv_offset> <device_path> <offset>
+        let table = format!(
+            "0 {} crypt {} {} {} {} {}\n",
+            num_sectors,
+            encryption,
+            to_hex(volume_key),
+            iv_tweak.0,
+            backing_device.to_string_lossy(),
+            offset.0 / SECTOR_SIZE as u64
+        );
+
+        // Call dmsetup create <name>
+        let mut child = Command::new("dmsetup")
+            .arg("create")
+            .arg(name)
+            .stdin(Stdio::piped())
+            .spawn()?;
+
+        // Pipe the table to stdin
+        if let Some(mut child_stdin) = child.stdin.take() {
+            child_stdin.write_all(table.as_bytes())?;
+        }
+
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(LuksError::DmSetup(format!("exit code {}", status)));
+        }
+
+        Ok(())
+    }
 }
 
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
@@ -246,6 +321,8 @@ pub enum LuksError {
     UnsupportedChecksumAlg(String),
     #[error("KDF error: {0}")]
     Kdf(String),
+    #[error("dmsetup failed: {0}")]
+    DmSetup(String),
 }
 
 /// A 64-bit unsigned integer that is represented as a decimal string in JSON.
