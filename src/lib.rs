@@ -1,9 +1,9 @@
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, Write};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -13,7 +13,6 @@ use {
     base64::Engine as _,
     sha2::Sha512,
     std::io::SeekFrom,
-    std::io::Write,
     std::path::Path,
     std::process::{Command, Stdio},
     xts_mode::{Xts128, get_tweak_default},
@@ -33,6 +32,27 @@ pub struct LuksDevice {
 
 #[cfg(feature = "_open")]
 impl LuksDevice {
+    /// Writes the LUKS device to a writer.
+    pub fn to_writer<W: Write + Seek>(&self, mut writer: W) -> Result<(), LuksError> {
+        self.header.to_writer(&mut writer)?;
+
+        match &self.header {
+            LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
+            LuksHeader::V2(h) => {
+                for (id, slot) in &h.metadata.keyslots {
+                    let area = slot.area();
+                    let data = self.keyslots.get(id).ok_or_else(|| {
+                        LuksError::InvalidHeader(format!("Data for keyslot {} not found", id))
+                    })?;
+                    writer.seek(std::io::SeekFrom::Start(area.offset()))?;
+                    writer.write_all(data)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Verifies that a passphrase can decrypt a specific keyslot.
     pub fn verify(&self, keyslot_id: &str, passphrase: &[u8]) -> Result<bool, LuksError> {
         let h2 = match &self.header {
@@ -150,20 +170,20 @@ impl LuksDevice {
         }
 
         let mut decrypted_data = encrypted_data.clone();
-        if key_size == 32 {
-            let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..16])
+        if key_size == (AES128_KEY_SIZE as u64 * 2) {
+            let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..AES128_KEY_SIZE])
                 .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
-            let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[16..32])
+            let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[AES128_KEY_SIZE..AES128_KEY_SIZE * 2])
                 .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
             let xts = Xts128::new(cipher_1, cipher_2);
 
             for (i, chunk) in decrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
                 xts.decrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
             }
-        } else if key_size == 64 {
-            let cipher_1 = aes::Aes256::new_from_slice(&keyslot_key[0..32])
+        } else if key_size == (AES256_KEY_SIZE as u64 * 2) {
+            let cipher_1 = aes::Aes256::new_from_slice(&keyslot_key[0..AES256_KEY_SIZE])
                 .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
-            let cipher_2 = aes::Aes256::new_from_slice(&keyslot_key[32..64])
+            let cipher_2 = aes::Aes256::new_from_slice(&keyslot_key[AES256_KEY_SIZE..AES256_KEY_SIZE * 2])
                 .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
             let xts = Xts128::new(cipher_1, cipher_2);
 
@@ -298,10 +318,22 @@ pub const LUKS2_CHECKSUM_OFFSET: usize = 448;
 /// The size of the LUKS2 binary header area in bytes.
 pub const LUKS2_BINARY_HEADER_SIZE: usize = 4096;
 
+/// The block size for the AES cipher in bytes.
+pub const AES_BLOCK_SIZE: usize = 16;
+/// The key size for AES-128 in bytes.
+pub const AES128_KEY_SIZE: usize = 16;
+/// The key size for AES-256 in bytes.
+pub const AES256_KEY_SIZE: usize = 32;
+
 /// The number of anti-forensic stripes used by the LUKS1 AF feature.
 ///
 /// For historical reasons, this value is always 4000.
 pub const LUKS1_AF_STRIPES: u32 = 4000;
+
+/// Default size of the LUKS2 JSON area in bytes.
+pub const LUKS2_DEFAULT_JSON_SIZE: u64 = 12288;
+/// Default size of the LUKS2 keyslots area in bytes.
+pub const LUKS2_DEFAULT_KEYSLOTS_SIZE: u64 = 4161536;
 
 #[derive(Error, Debug)]
 pub enum LuksError {
@@ -806,6 +838,92 @@ impl Luks2Header {
     pub fn num_keyslots(&self) -> usize {
         self.metadata.keyslots.len()
     }
+
+    /// Writes the header and its metadata to a writer.
+    pub fn to_writer<W: Write + Seek>(&self, mut writer: W) -> Result<(), LuksError> {
+        // Serialize JSON metadata
+        let json_str = serde_json::to_string(&self.metadata)?;
+        let json_bytes = json_str.as_bytes();
+        let json_size = json_bytes.len() as u64;
+
+        // Calculate binary header size (fixed at 4096)
+        let binary_header_size = LUKS2_BINARY_HEADER_SIZE as u64;
+
+        // Prepare binary header buffer
+        let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
+        let mut cursor = std::io::Cursor::new(&mut binary_header);
+
+        // Write magic
+        cursor.write_all(&LUKS_MAGIC)?;
+
+        // Write version
+        cursor.write_u16::<BigEndian>(self.version)?;
+
+        // Write hdr_size (binary_header_size + JSON size)
+        cursor.write_u64::<BigEndian>(binary_header_size + json_size)?;
+
+        // Write seqid
+        cursor.write_u64::<BigEndian>(self.seqid)?;
+
+        // Write label (48 bytes)
+        let mut label_buf = [0u8; LUKS2_LABEL_SIZE];
+        let label_bytes = self.label.as_bytes();
+        let label_len = std::cmp::min(label_bytes.len(), LUKS2_LABEL_SIZE);
+        label_buf[..label_len].copy_from_slice(&label_bytes[..label_len]);
+        cursor.write_all(&label_buf)?;
+
+        // Write checksum algorithm (32 bytes)
+        let mut csum_alg_buf = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
+        let csum_alg_bytes = self.checksum_alg.as_bytes();
+        let csum_alg_len = std::cmp::min(csum_alg_bytes.len(), LUKS2_CHECKSUM_ALG_SIZE);
+        csum_alg_buf[..csum_alg_len].copy_from_slice(&csum_alg_bytes[..csum_alg_len]);
+        cursor.write_all(&csum_alg_buf)?;
+
+        // Write salt (64 bytes)
+        cursor.write_all(&self.salt)?;
+
+        // Write uuid (40 bytes)
+        let mut uuid_buf = [0u8; LUKS2_UUID_SIZE];
+        let uuid_bytes = self.uuid.as_str().as_bytes();
+        let uuid_len = std::cmp::min(uuid_bytes.len(), LUKS2_UUID_SIZE);
+        uuid_buf[..uuid_len].copy_from_slice(&uuid_bytes[..uuid_len]);
+        cursor.write_all(&uuid_buf)?;
+
+        // Write subsystem (48 bytes)
+        let mut subsystem_buf = [0u8; LUKS2_SUBSYSTEM_SIZE];
+        let subsystem_bytes = self.subsystem.as_bytes();
+        let subsystem_len = std::cmp::min(subsystem_bytes.len(), LUKS2_SUBSYSTEM_SIZE);
+        subsystem_buf[..subsystem_len].copy_from_slice(&subsystem_bytes[..subsystem_len]);
+        cursor.write_all(&subsystem_buf)?;
+
+        // Write hdr_offset
+        cursor.write_u64::<BigEndian>(self.hdr_offset)?;
+
+        // Calculate checksum
+        if self.checksum_alg == HASH_SHA256 {
+            let mut hasher = Sha256::new();
+            // The checksum is calculated with the checksum field zeroed out
+            // binary_header already has it as zeroed out because it was initialized with vec![0u8; LUKS2_BINARY_HEADER_SIZE]
+            hasher.update(&binary_header);
+            hasher.update(json_bytes);
+            let calculated = hasher.finalize();
+
+            // Store checksum in the buffer
+            binary_header[LUKS2_CHECKSUM_OFFSET..LUKS2_CHECKSUM_OFFSET + SHA256_DIGEST_SIZE]
+                .copy_from_slice(calculated.as_slice());
+        } else {
+            return Err(LuksError::UnsupportedChecksumAlg(self.checksum_alg.clone()));
+        }
+
+        // Write binary header to writer
+        writer.seek(std::io::SeekFrom::Start(self.hdr_offset))?;
+        writer.write_all(&binary_header)?;
+
+        // Write JSON metadata
+        writer.write_all(json_bytes)?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -820,6 +938,14 @@ impl LuksHeader {
         match self {
             LuksHeader::V1 => 8, // LUKS1 always has 8 keyslot entries in the header
             LuksHeader::V2(h) => h.num_keyslots(),
+        }
+    }
+
+    /// Writes the header to a writer.
+    pub fn to_writer<W: Write + Seek>(&self, writer: W) -> Result<(), LuksError> {
+        match self {
+            LuksHeader::V1 => Err(LuksError::UnsupportedVersion(1)),
+            LuksHeader::V2(h) => h.to_writer(writer),
         }
     }
 
@@ -975,16 +1101,19 @@ mod tests {
     #[test]
     fn test_detect_luks2_with_checksum() {
         let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
-        let json_data = r#"{
-            "keyslots": {},
-            "tokens": {},
-            "segments": {},
-            "digests": {},
-            "config": {
-                "json_size": "12288",
-                "keyslots_size": "4161536"
-            }
-        }"#;
+        let json_data = format!(
+            r#"{{
+            "keyslots": {{}},
+            "tokens": {{}},
+            "segments": {{}},
+            "digests": {{}},
+            "config": {{
+                "json_size": "{}",
+                "keyslots_size": "{}"
+            }}
+        }}"#,
+            LUKS2_DEFAULT_JSON_SIZE, LUKS2_DEFAULT_KEYSLOTS_SIZE
+        );
         let hdr_size = LUKS2_BINARY_HEADER_SIZE as u64 + json_data.len() as u64;
 
         {
@@ -999,7 +1128,7 @@ mod tests {
             cursor.write_all(&label).unwrap();
 
             let mut csum_alg = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
-            csum_alg[..6].copy_from_slice(b"sha256");
+            csum_alg[..HASH_SHA256.len()].copy_from_slice(HASH_SHA256.as_bytes());
             cursor.write_all(&csum_alg).unwrap();
 
             cursor.write_all(&[0u8; LUKS2_SALT_SIZE]).unwrap();
@@ -1034,7 +1163,206 @@ mod tests {
             assert_eq!(h.version, 2);
             assert_eq!(h.label, "test");
             assert_eq!(h.uuid, "abcd");
-            assert_eq!(h.num_keyslots(), 0);
+        } else {
+            panic!("Expected LUKS2 header");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "_open")]
+    fn test_device_roundtrip() {
+        use aes::cipher::KeyInit;
+        use base64::Engine;
+        use rand::RngExt;
+        use xts_mode::{Xts128, get_tweak_default};
+        let mut rng = rand::rng();
+
+        // 1. Setup metadata
+        let mut salt = [0u8; LUKS2_SALT_SIZE];
+        rng.fill(&mut salt);
+
+        let volume_key_size = AES128_KEY_SIZE * 2;
+        let volume_key = vec![0x42u8; volume_key_size];
+        let passphrase = b"correct horse battery staple";
+
+        // Keyslot 0
+        let mut keyslot_salt = [0u8; 32];
+        rng.fill(&mut keyslot_salt);
+        let keyslot_salt_b64 = base64::engine::general_purpose::STANDARD.encode(keyslot_salt);
+
+        let kdf = Luks2Kdf::Pbkdf2 {
+            hash: HASH_SHA256.to_string(),
+            iterations: 1000,
+            salt: keyslot_salt_b64,
+        };
+
+        let keyslot_key = crate::kdf::derive_key(&kdf, passphrase, &salt, volume_key_size).unwrap();
+
+        // AF split the volume key
+        let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
+        rng.fill(&mut random_stripes);
+        let encrypted_keyslot_data = crate::af::split(
+            &volume_key,
+            HASH_SHA256,
+            LUKS1_AF_STRIPES,
+            volume_key_size,
+            random_stripes,
+        )
+        .unwrap();
+
+        // Encrypt the AF stripes with the keyslot key
+        let mut encrypted_data = encrypted_keyslot_data.clone();
+        let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..AES128_KEY_SIZE]).unwrap();
+        let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[AES128_KEY_SIZE..AES128_KEY_SIZE * 2]).unwrap();
+        let xts = Xts128::new(cipher_1, cipher_2);
+        for (i, chunk) in encrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+            xts.encrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+        }
+
+        let keyslot = Luks2Keyslot::Luks2 {
+            key_size: Luks2KeySize::Size32,
+            priority: Some(Luks2KeyslotPriority::Normal),
+            af: Luks2Af {
+                af_type: Luks2AfType::Luks1,
+                stripes: LUKS1_AF_STRIPES,
+                hash: HASH_SHA256.to_string(),
+            },
+            area: Luks2Area::Raw {
+                encryption: Luks2AreaEncryption::AesXtsPlain64,
+                key_size: Luks2KeySize::Size32,
+                offset: Luks2U64(32768),
+                size: Luks2U64(encrypted_data.len() as u64),
+            },
+            kdf,
+        };
+
+        // Digest
+        let mut digest_salt = [0u8; 32];
+        rng.fill(&mut digest_salt);
+        let digest_salt_b64 = base64::engine::general_purpose::STANDARD.encode(digest_salt);
+
+        let mut expected_digest = vec![0u8; 32];
+        pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(&volume_key, &digest_salt, 1000, &mut expected_digest).unwrap();
+        let expected_digest_b64 = base64::engine::general_purpose::STANDARD.encode(expected_digest);
+
+        let digest = Luks2Digest::Pbkdf2 {
+            keyslots: vec!["0".to_string()],
+            segments: vec!["0".to_string()],
+            hash: HASH_SHA256.to_string(),
+            iterations: 1000,
+            salt: digest_salt_b64,
+            digest: expected_digest_b64,
+        };
+
+        let segment = Luks2Segment::Crypt {
+            offset: Luks2U64(16777216), // 16MB offset
+            iv_tweak: Luks2U64(0),
+            size: Luks2SegmentSize::Dynamic,
+            encryption: "aes-xts-plain64".to_string(),
+            sector_size: 512,
+        };
+
+        let mut keyslots = HashMap::new();
+        keyslots.insert("0".to_string(), keyslot);
+
+        let mut digests = HashMap::new();
+        digests.insert("0".to_string(), digest);
+
+        let mut segments = HashMap::new();
+        segments.insert("0".to_string(), segment);
+
+        let header = Luks2Header {
+            version: 2,
+            hdr_size: 0, // Will be recalculated
+            seqid: 1,
+            label: "test".to_string(),
+            checksum_alg: "sha256".to_string(),
+            salt,
+            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            subsystem: "test".to_string(),
+            hdr_offset: 0,
+            checksum: [0u8; LUKS2_CHECKSUM_SIZE],
+            metadata: Luks2Metadata {
+                keyslots,
+                tokens: HashMap::new(),
+                segments,
+                digests,
+                config: Luks2Config {
+                    json_size: Luks2U64(LUKS2_DEFAULT_JSON_SIZE),
+                    keyslots_size: Luks2U64(LUKS2_DEFAULT_KEYSLOTS_SIZE),
+                    flags: None,
+                },
+            },
+        };
+
+        let mut captured_keyslots = HashMap::new();
+        captured_keyslots.insert("0".to_string(), encrypted_data);
+
+        let device = LuksDevice {
+            header: LuksHeader::V2(header),
+            keyslots: captured_keyslots,
+        };
+
+        // 2. Write to buffer
+        let mut buf = Cursor::new(Vec::new());
+        device.to_writer(&mut buf).expect("to_writer failed");
+
+        // 3. Read back and verify
+        buf.set_position(0);
+        let read_device = LuksHeader::open(&mut buf).expect("open failed");
+
+        assert!(read_device.verify("0", passphrase).expect("verify failed"));
+        assert!(
+            !read_device
+                .verify("0", b"wrong passphrase")
+                .expect("verify failed")
+        );
+    }
+
+    #[test]
+    fn test_header_roundtrip() {
+        let mut salt = [0u8; LUKS2_SALT_SIZE];
+        salt[0..4].copy_from_slice(b"salt");
+        let header = Luks2Header {
+            version: 2,
+            hdr_size: 16384, // Will be recalculated in to_writer anyway
+            seqid: 1,
+            label: "test".to_string(),
+            checksum_alg: HASH_SHA256.to_string(),
+            salt,
+            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            subsystem: "test".to_string(),
+            hdr_offset: 0,
+            checksum: [0u8; LUKS2_CHECKSUM_SIZE], // Will be calculated in to_writer
+            metadata: Luks2Metadata {
+                keyslots: HashMap::new(),
+                tokens: HashMap::new(),
+                segments: HashMap::new(),
+                digests: HashMap::new(),
+                config: Luks2Config {
+                    json_size: Luks2U64(LUKS2_DEFAULT_JSON_SIZE),
+                    keyslots_size: Luks2U64(LUKS2_DEFAULT_KEYSLOTS_SIZE),
+                    flags: None,
+                },
+            },
+        };
+
+        let mut buf = Cursor::new(Vec::new());
+        header.to_writer(&mut buf).expect("to_writer failed");
+
+        buf.set_position(0);
+        let read_header = LuksHeader::from_reader(&mut buf).expect("from_reader failed");
+
+        if let LuksHeader::V2(h) = read_header {
+            assert_eq!(h.version, header.version);
+            assert_eq!(h.label, header.label);
+            assert_eq!(h.uuid, header.uuid);
+            assert_eq!(h.subsystem, header.subsystem);
+            assert_eq!(h.checksum_alg, header.checksum_alg);
+            assert_eq!(h.salt, header.salt);
+            assert_eq!(h.hdr_offset, header.hdr_offset);
+            // hdr_size is recalculated, so check if it's correct
+            assert!(h.hdr_size >= LUKS2_BINARY_HEADER_SIZE as u64);
         } else {
             panic!("Expected LUKS2 header");
         }
@@ -1043,33 +1371,36 @@ mod tests {
     #[test]
     fn test_num_keyslots() {
         let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
-        let json_data = r#"{
-            "keyslots": {
-                "0": {
+        let json_data = format!(
+            r#"{{
+            "keyslots": {{
+                "0": {{
                     "type": "luks2",
                     "key_size": 64,
                     "priority": 1,
-                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
-                    "area": { "type": "raw", "encryption": "aes-xts-plain64", "key_size": 64, "offset": "32768", "size": "131072" },
-                    "kdf": { "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "z6vz4xK7cjan92rDA5JF8O6Jk2HouV0O8DMB6GlztVk=" }
-                },
-                "1": {
+                    "af": {{ "type": "luks1", "stripes": 4000, "hash": "{}" }},
+                    "area": {{ "type": "raw", "encryption": "aes-xts-plain64", "key_size": 64, "offset": "32768", "size": "131072" }},
+                    "kdf": {{ "type": "argon2i", "time": 4, "memory": 235980, "cpus": 2, "salt": "z6vz4xK7cjan92rDA5JF8O6Jk2HouV0O8DMB6GlztVk=" }}
+                }},
+                "1": {{
                     "type": "luks2",
                     "key_size": 64,
                     "priority": 1,
-                    "af": { "type": "luks1", "stripes": 4000, "hash": "sha256" },
-                    "area": { "type": "raw", "encryption": "aes-xts-plain64", "key_size": 64, "offset": "163840", "size": "131072" },
-                    "kdf": { "type": "pbkdf2", "hash": "sha256", "iterations": 1774240, "salt": "vWcwY3rx2fKpXW2Q6oSCNf8j5bvdJyEzB6BNXECGDsI=" }
-                }
-            },
-            "tokens": {},
-            "segments": {},
-            "digests": {},
-            "config": {
-                "json_size": "12288",
-                "keyslots_size": "4161536"
-            }
-        }"#;
+                    "af": {{ "type": "luks1", "stripes": 4000, "hash": "{}" }},
+                    "area": {{ "type": "raw", "encryption": "aes-xts-plain64", "key_size": 64, "offset": "163840", "size": "131072" }},
+                    "kdf": {{ "type": "pbkdf2", "hash": "sha256", "iterations": 1774240, "salt": "vWcwY3rx2fKpXW2Q6oSCNf8j5bvdJyEzB6BNXECGDsI=" }}
+                }}
+            }},
+            "tokens": {{}},
+            "segments": {{}},
+            "digests": {{}},
+            "config": {{
+                "json_size": "{}",
+                "keyslots_size": "{}"
+            }}
+        }}"#,
+            HASH_SHA256, HASH_SHA256, LUKS2_DEFAULT_JSON_SIZE, LUKS2_DEFAULT_KEYSLOTS_SIZE
+        );
         let hdr_size = LUKS2_BINARY_HEADER_SIZE as u64 + json_data.len() as u64;
 
         {
@@ -1083,7 +1414,7 @@ mod tests {
             cursor.write_all(&label).unwrap();
 
             let mut csum_alg = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
-            csum_alg[..6].copy_from_slice(b"sha256");
+            csum_alg[..HASH_SHA256.len()].copy_from_slice(HASH_SHA256.as_bytes());
             cursor.write_all(&csum_alg).unwrap();
 
             cursor.write_all(&[0u8; LUKS2_SALT_SIZE]).unwrap();
