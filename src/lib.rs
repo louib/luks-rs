@@ -1173,7 +1173,7 @@ mod tests {
     fn test_device_roundtrip() {
         use aes::cipher::KeyInit;
         use base64::Engine;
-        use rand::RngExt;
+        use rand::Rng;
         use xts_mode::{Xts128, get_tweak_default};
         let mut rng = rand::rng();
 
@@ -1200,7 +1200,7 @@ mod tests {
 
         // AF split the volume key
         let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
-        rng.fill(&mut random_stripes);
+        rng.fill(&mut random_stripes[..]);
         let encrypted_keyslot_data = crate::af::split(
             &volume_key,
             HASH_SHA256,

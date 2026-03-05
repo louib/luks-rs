@@ -129,7 +129,7 @@ fn hash_buf(hash_alg: &str, src: &[u8], iv: u32) -> Result<Vec<u8>, LuksError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::RngExt;
+    use rand::Rng;
 
     #[test]
     fn test_af_roundtrip() {
