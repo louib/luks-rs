@@ -21,8 +21,10 @@ use {
 
 pub mod af;
 pub mod kdf;
+pub mod key;
 
 pub use kdf::derive_key;
+pub use key::Key;
 
 #[cfg(feature = "_open")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +57,7 @@ impl LuksDevice {
     }
 
     /// Verifies that a passphrase can decrypt a specific keyslot.
-    pub fn verify(&self, keyslot_id: &str, passphrase: &[u8]) -> Result<bool, LuksError> {
+    pub fn verify(&self, keyslot_id: &str, key: &Key) -> Result<bool, LuksError> {
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -81,7 +83,7 @@ impl LuksDevice {
             } => (hash, salt, digest, iterations),
         };
 
-        let volume_key = self.get_volume_key(keyslot_id, passphrase)?;
+        let volume_key = self.get_volume_key(keyslot_id, key)?;
 
         // 5. Verify the volume key using the digest
         let kdf_digest_salt = base64::engine::general_purpose::STANDARD
@@ -120,7 +122,7 @@ impl LuksDevice {
     }
 
     /// Derives the volume key using a passphrase and a specific keyslot.
-    pub fn get_volume_key(&self, keyslot_id: &str, passphrase: &[u8]) -> Result<Vec<u8>, LuksError> {
+    pub fn get_volume_key(&self, keyslot_id: &str, key: &Key) -> Result<Vec<u8>, LuksError> {
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -154,7 +156,7 @@ impl LuksDevice {
         };
 
         // 1. Derive the keyslot key from the passphrase
-        let keyslot_key = crate::kdf::derive_key(kdf, passphrase, &h2.salt, key_size as usize)?;
+        let keyslot_key = crate::kdf::derive_key(kdf, key.expose_bytes(), &h2.salt, key_size as usize)?;
 
         // 2. Get the encrypted data from the captured keyslots
         let encrypted_data = self
@@ -285,19 +287,14 @@ impl LuksDevice {
     pub fn change_passphrase(
         &mut self,
         keyslot_id: &str,
-        old_passphrase: &[u8],
-        new_passphrase: &[u8],
+        old_key: &Key,
+        new_key: &Key,
     ) -> Result<(), LuksError> {
-        let volume_key = self.get_volume_key(keyslot_id, old_passphrase)?;
-        self.update_keyslot(keyslot_id, new_passphrase, &volume_key)
+        let volume_key = self.get_volume_key(keyslot_id, old_key)?;
+        self.update_keyslot(keyslot_id, new_key, &volume_key)
     }
 
-    fn update_keyslot(
-        &mut self,
-        keyslot_id: &str,
-        passphrase: &[u8],
-        volume_key: &[u8],
-    ) -> Result<(), LuksError> {
+    fn update_keyslot(&mut self, keyslot_id: &str, key: &Key, volume_key: &[u8]) -> Result<(), LuksError> {
         let h2 = match &mut self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -343,7 +340,7 @@ impl LuksDevice {
         }
 
         // 2. Derive the new keyslot key
-        let keyslot_key = crate::kdf::derive_key(kdf, passphrase, &h2.salt, key_size as usize)?;
+        let keyslot_key = crate::kdf::derive_key(kdf, key.expose_bytes(), &h2.salt, key_size as usize)?;
 
         // 3. AF-split the volume key
         let mut random_stripes = vec![0u8; (volume_key.len() as u32 * (af.stripes - 1)) as usize];
@@ -1428,12 +1425,10 @@ mod tests {
         buf.set_position(0);
         let read_device = LuksHeader::open(&mut buf).expect("open failed");
 
-        assert!(read_device.verify("0", passphrase).expect("verify failed"));
-        assert!(
-            !read_device
-                .verify("0", b"wrong passphrase")
-                .expect("verify failed")
-        );
+        let key = Key::from(String::from_utf8_lossy(passphrase).to_string());
+        assert!(read_device.verify("0", &key).expect("verify failed"));
+        let wrong_key = Key::from("wrong passphrase");
+        assert!(!read_device.verify("0", &wrong_key).expect("verify failed"));
     }
 
     #[test]
@@ -1453,8 +1448,10 @@ mod tests {
 
         let volume_key_size = AES128_KEY_SIZE * 2;
         let volume_key = vec![0x42u8; volume_key_size];
-        let old_passphrase = b"old passphrase";
-        let new_passphrase = b"new passphrase";
+        let old_passphrase = "old passphrase";
+        let new_passphrase = "new passphrase";
+        let old_key = Key::from(old_passphrase);
+        let new_key = Key::from(new_passphrase);
 
         // Keyslot 0
         let mut keyslot_salt = [0u8; KDF_SALT_SIZE];
@@ -1467,7 +1464,7 @@ mod tests {
             salt: keyslot_salt_b64,
         };
 
-        let keyslot_key = crate::kdf::derive_key(&kdf, old_passphrase, &salt, volume_key_size).unwrap();
+        let keyslot_key = crate::kdf::derive_key(&kdf, old_key.expose_bytes(), &salt, volume_key_size).unwrap();
 
         // AF split the volume key
         let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
@@ -1566,24 +1563,24 @@ mod tests {
 
         // 2. Change passphrase
         device
-            .change_passphrase("0", old_passphrase, new_passphrase)
+            .change_passphrase("0", &old_key, &new_key)
             .expect("change_passphrase failed");
 
         // 3. Verify
         assert!(
             device
-                .verify("0", new_passphrase)
+                .verify("0", &new_key)
                 .expect("verify with new passphrase failed")
         );
         assert!(
             !device
-                .verify("0", old_passphrase)
+                .verify("0", &old_key)
                 .expect("verify with old passphrase failed")
         );
 
         // 4. Verify volume key is still the same
         let derived_volume_key = device
-            .get_volume_key("0", new_passphrase)
+            .get_volume_key("0", &new_key)
             .expect("get_volume_key failed");
         assert_eq!(volume_key, derived_volume_key);
     }

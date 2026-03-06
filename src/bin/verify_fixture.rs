@@ -1,4 +1,4 @@
-use luks::LuksDevice;
+use luks::{Key, LuksDevice};
 use std::env;
 use std::io;
 use std::process;
@@ -31,11 +31,11 @@ fn main() {
     if passphrase.ends_with('\r') {
         passphrase.pop();
     }
-    let passphrase_bytes = passphrase.as_bytes();
+    let key = Key::from(passphrase);
 
     if args.len() > 2 {
         let keyslot_id = &args[2];
-        match device.verify(keyslot_id, passphrase_bytes) {
+        match device.verify(keyslot_id, &key) {
             Ok(true) => println!("Passphrase verified successfully for keyslot {}!", keyslot_id),
             Ok(false) => println!("Passphrase verification failed for keyslot {}.", keyslot_id),
             Err(e) => {
@@ -50,7 +50,7 @@ fn main() {
 
         let mut found = false;
         for id in ids {
-            match device.verify(&id, passphrase_bytes) {
+            match device.verify(&id, &key) {
                 Ok(true) => {
                     println!("Passphrase verified successfully for keyslot {}!", id);
                     found = true;
