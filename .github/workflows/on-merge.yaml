@@ -15,7 +15,7 @@ jobs:
       - name: Get Nix version
         id: nix-version
         run: echo "version=$(cat .nix-version)" >> $GITHUB_OUTPUT
-      - uses: nix-community/install-nix-action@v31
+      - uses: cachix/install-nix-action@v31
         with:
           install_url: https://releases.nixos.org/nix/nix-${{ steps.nix-version.outputs.version }}/install
       - name: run cargo test
@@ -29,7 +29,7 @@ jobs:
       - name: Get Nix version
         id: nix-version
         run: echo "version=$(cat .nix-version)" >> $GITHUB_OUTPUT
-      - uses: nix-community/install-nix-action@v31
+      - uses: cachix/install-nix-action@v31
         with:
           install_url: https://releases.nixos.org/nix/nix-${{ steps.nix-version.outputs.version }}/install
       - name: running cargo fmt
