@@ -11,6 +11,7 @@ use thiserror::Error;
 use {
     aes::cipher::KeyInit,
     base64::Engine as _,
+    rand::Rng,
     sha2::Sha512,
     std::io::SeekFrom,
     std::path::Path,
@@ -277,6 +278,119 @@ impl LuksDevice {
 
         Ok(())
     }
+
+    /// Changes the passphrase for a specific keyslot without changing the volume key.
+    ///
+    /// This only updates the metadata in memory. You must call [`to_writer`] to persist the changes.
+    pub fn change_passphrase(
+        &mut self,
+        keyslot_id: &str,
+        old_passphrase: &[u8],
+        new_passphrase: &[u8],
+    ) -> Result<(), LuksError> {
+        let volume_key = self.get_volume_key(keyslot_id, old_passphrase)?;
+        self.update_keyslot(keyslot_id, new_passphrase, &volume_key)
+    }
+
+    fn update_keyslot(
+        &mut self,
+        keyslot_id: &str,
+        passphrase: &[u8],
+        volume_key: &[u8],
+    ) -> Result<(), LuksError> {
+        let h2 = match &mut self.header {
+            LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
+            LuksHeader::V2(h) => h,
+        };
+
+        let keyslot = h2
+            .metadata
+            .keyslots
+            .get_mut(keyslot_id)
+            .ok_or_else(|| LuksError::InvalidHeader(format!("Keyslot {} not found", keyslot_id)))?;
+
+        let (kdf, key_size, area, af) = match keyslot {
+            Luks2Keyslot::Luks2 {
+                kdf,
+                key_size,
+                area,
+                af,
+                ..
+            } => (kdf, u64::from(*key_size), area, af),
+            Luks2Keyslot::Reencrypt { .. } => {
+                return Err(LuksError::Kdf(
+                    "Changing passphrase for reencrypt keyslots not supported".to_string(),
+                ));
+            }
+        };
+
+        let Luks2Area::Raw { encryption, .. } = area else {
+            return Err(LuksError::InvalidHeader(
+                "LUKS2 keyslot must have area type 'raw'".to_string(),
+            ));
+        };
+
+        // 1. Generate new KDF salt
+        let mut new_salt = vec![0u8; KDF_SALT_SIZE];
+        rand::rng().fill(&mut new_salt[..]);
+        let new_salt_b64 = base64::engine::general_purpose::STANDARD.encode(new_salt);
+
+        // Update salt in KDF
+        match kdf {
+            Luks2Kdf::Argon2i { salt, .. } => *salt = new_salt_b64,
+            Luks2Kdf::Argon2id { salt, .. } => *salt = new_salt_b64,
+            Luks2Kdf::Pbkdf2 { salt, .. } => *salt = new_salt_b64,
+        }
+
+        // 2. Derive the new keyslot key
+        let keyslot_key = crate::kdf::derive_key(kdf, passphrase, &h2.salt, key_size as usize)?;
+
+        // 3. AF-split the volume key
+        let mut random_stripes = vec![0u8; (volume_key.len() as u32 * (af.stripes - 1)) as usize];
+        rand::rng().fill(&mut random_stripes[..]);
+        let split_data = crate::af::split(volume_key, &af.hash, af.stripes, volume_key.len(), random_stripes)?;
+
+        // 4. Encrypt the area
+        if *encryption != Luks2AreaEncryption::AesXtsPlain64 {
+            return Err(LuksError::UnsupportedChecksumAlg(format!(
+                "Area encryption {} is not supported",
+                encryption
+            )));
+        }
+
+        let mut encrypted_data = split_data.clone();
+        if key_size == (AES128_KEY_SIZE as u64 * 2) {
+            let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..AES128_KEY_SIZE])
+                .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+            let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[AES128_KEY_SIZE..AES128_KEY_SIZE * 2])
+                .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+            let xts = Xts128::new(cipher_1, cipher_2);
+
+            for (i, chunk) in encrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+                xts.encrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+            }
+        } else if key_size == (AES256_KEY_SIZE as u64 * 2) {
+            let cipher_1 = aes::Aes256::new_from_slice(&keyslot_key[0..AES256_KEY_SIZE])
+                .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+            let cipher_2 = aes::Aes256::new_from_slice(&keyslot_key[AES256_KEY_SIZE..AES256_KEY_SIZE * 2])
+                .map_err(|e| LuksError::Kdf(format!("Cipher error: {}", e)))?;
+            let xts = Xts128::new(cipher_1, cipher_2);
+
+            for (i, chunk) in encrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+                xts.encrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+            }
+        } else {
+            return Err(LuksError::Kdf(format!(
+                "Unsupported key size {} for AES-XTS",
+                key_size
+            )));
+        }
+
+        // 5. Update self.keyslots
+        self.keyslots.insert(keyslot_id.to_string(), encrypted_data);
+
+        Ok(())
+    }
 }
 
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
@@ -307,6 +421,9 @@ pub const SHA512_DIGEST_SIZE: usize = 64;
 
 /// The standard sector size in bytes.
 pub const SECTOR_SIZE: usize = 512;
+
+/// The size of a KDF salt in bytes.
+pub const KDF_SALT_SIZE: usize = 32;
 
 /// SHA-256 hash algorithm identifier.
 pub const HASH_SHA256: &str = "sha256";
@@ -1317,6 +1434,158 @@ mod tests {
                 .verify("0", b"wrong passphrase")
                 .expect("verify failed")
         );
+    }
+
+    #[test]
+    #[cfg(feature = "_open")]
+    fn test_change_passphrase() {
+        use aes::cipher::KeyInit;
+        use base64::Engine;
+        use rand::Rng;
+        use xts_mode::{Xts128, get_tweak_default};
+        let mut rng = rand::rng();
+
+        const TEST_ITERATIONS: u32 = 1000;
+
+        // 1. Setup metadata
+        let mut salt = [0u8; LUKS2_SALT_SIZE];
+        rng.fill(&mut salt);
+
+        let volume_key_size = AES128_KEY_SIZE * 2;
+        let volume_key = vec![0x42u8; volume_key_size];
+        let old_passphrase = b"old passphrase";
+        let new_passphrase = b"new passphrase";
+
+        // Keyslot 0
+        let mut keyslot_salt = [0u8; KDF_SALT_SIZE];
+        rng.fill(&mut keyslot_salt);
+        let keyslot_salt_b64 = base64::engine::general_purpose::STANDARD.encode(keyslot_salt);
+
+        let kdf = Luks2Kdf::Pbkdf2 {
+            hash: HASH_SHA256.to_string(),
+            iterations: TEST_ITERATIONS,
+            salt: keyslot_salt_b64,
+        };
+
+        let keyslot_key = crate::kdf::derive_key(&kdf, old_passphrase, &salt, volume_key_size).unwrap();
+
+        // AF split the volume key
+        let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
+        rng.fill(&mut random_stripes[..]);
+        let encrypted_keyslot_data = crate::af::split(
+            &volume_key,
+            HASH_SHA256,
+            LUKS1_AF_STRIPES,
+            volume_key_size,
+            random_stripes,
+        )
+        .unwrap();
+
+        // Encrypt the AF stripes with the keyslot key
+        let mut encrypted_data = encrypted_keyslot_data.clone();
+        let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..AES128_KEY_SIZE]).unwrap();
+        let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[AES128_KEY_SIZE..AES128_KEY_SIZE * 2]).unwrap();
+        let xts = Xts128::new(cipher_1, cipher_2);
+        for (i, chunk) in encrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+            xts.encrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+        }
+
+        let keyslot = Luks2Keyslot::Luks2 {
+            key_size: Luks2KeySize::Size32,
+            priority: Some(Luks2KeyslotPriority::Normal),
+            af: Luks2Af {
+                af_type: Luks2AfType::Luks1,
+                stripes: LUKS1_AF_STRIPES,
+                hash: HASH_SHA256.to_string(),
+            },
+            area: Luks2Area::Raw {
+                encryption: Luks2AreaEncryption::AesXtsPlain64,
+                key_size: Luks2KeySize::Size32,
+                offset: Luks2U64(32768),
+                size: Luks2U64(encrypted_data.len() as u64),
+            },
+            kdf,
+        };
+
+        // Digest
+        let mut digest_salt = [0u8; KDF_SALT_SIZE];
+        rng.fill(&mut digest_salt);
+        let digest_salt_b64 = base64::engine::general_purpose::STANDARD.encode(digest_salt);
+
+        let mut expected_digest = vec![0u8; SHA256_DIGEST_SIZE];
+        pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(&volume_key, &digest_salt, TEST_ITERATIONS, &mut expected_digest)
+            .unwrap();
+        let expected_digest_b64 = base64::engine::general_purpose::STANDARD.encode(expected_digest);
+
+        let digest = Luks2Digest::Pbkdf2 {
+            keyslots: vec!["0".to_string()],
+            segments: vec!["0".to_string()],
+            hash: HASH_SHA256.to_string(),
+            iterations: TEST_ITERATIONS,
+            salt: digest_salt_b64,
+            digest: expected_digest_b64,
+        };
+
+        let mut keyslots = HashMap::new();
+        keyslots.insert("0".to_string(), keyslot);
+
+        let mut digests = HashMap::new();
+        digests.insert("0".to_string(), digest);
+
+        let header = Luks2Header {
+            version: 2,
+            hdr_size: 0,
+            seqid: 1,
+            label: "test".to_string(),
+            checksum_alg: "sha256".to_string(),
+            salt,
+            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            subsystem: "test".to_string(),
+            hdr_offset: 0,
+            checksum: [0u8; LUKS2_CHECKSUM_SIZE],
+            metadata: Luks2Metadata {
+                keyslots,
+                tokens: HashMap::new(),
+                segments: HashMap::new(),
+                digests,
+                config: Luks2Config {
+                    json_size: Luks2U64(LUKS2_DEFAULT_JSON_SIZE),
+                    keyslots_size: Luks2U64(LUKS2_DEFAULT_KEYSLOTS_SIZE),
+                    flags: None,
+                },
+            },
+        };
+
+        let mut captured_keyslots = HashMap::new();
+        captured_keyslots.insert("0".to_string(), encrypted_data);
+
+        let mut device = LuksDevice {
+            header: LuksHeader::V2(header),
+            keyslots: captured_keyslots,
+        };
+
+        // 2. Change passphrase
+        device
+            .change_passphrase("0", old_passphrase, new_passphrase)
+            .expect("change_passphrase failed");
+
+        // 3. Verify
+        assert!(
+            device
+                .verify("0", new_passphrase)
+                .expect("verify with new passphrase failed")
+        );
+        assert!(
+            !device
+                .verify("0", old_passphrase)
+                .expect("verify with old passphrase failed")
+        );
+
+        // 4. Verify volume key is still the same
+        let derived_volume_key = device
+            .get_volume_key("0", new_passphrase)
+            .expect("get_volume_key failed");
+        assert_eq!(volume_key, derived_volume_key);
     }
 
     #[test]
