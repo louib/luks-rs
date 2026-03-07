@@ -16,7 +16,7 @@ fn main() {
         process::exit(1);
     });
 
-    let device: LuksDevice = serde_json::from_str(&fixture_str).unwrap_or_else(|e| {
+    let mut device: LuksDevice = serde_json::from_str(&fixture_str).unwrap_or_else(|e| {
         eprintln!("Error deserializing fixture: {}", e);
         process::exit(1);
     });
@@ -35,9 +35,8 @@ fn main() {
 
     if args.len() > 2 {
         let keyslot_id = &args[2];
-        match device.verify(keyslot_id, &key) {
-            Ok(true) => println!("Passphrase verified successfully for keyslot {}!", keyslot_id),
-            Ok(false) => println!("Passphrase verification failed for keyslot {}.", keyslot_id),
+        match device.unlock(keyslot_id, &key) {
+            Ok(_) => println!("Passphrase verified successfully for keyslot {}!", keyslot_id),
             Err(e) => {
                 eprintln!("Error verifying passphrase: {}", e);
                 process::exit(1);
@@ -50,16 +49,13 @@ fn main() {
 
         let mut found = false;
         for id in ids {
-            match device.verify(&id, &key) {
-                Ok(true) => {
+            match device.unlock(&id, &key) {
+                Ok(_) => {
                     println!("Passphrase verified successfully for keyslot {}!", id);
                     found = true;
                     break;
                 }
-                Ok(false) => continue,
-                Err(e) => {
-                    eprintln!("Error verifying keyslot {}: {}", id, e);
-                }
+                Err(_) => continue,
             }
         }
         if !found {

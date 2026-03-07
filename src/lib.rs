@@ -27,14 +27,29 @@ pub use kdf::derive_key;
 pub use key::{Key, VolumeKey};
 
 #[cfg(feature = "_open")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LuksDevice {
     pub header: LuksHeader,
     pub keyslots: HashMap<String, Vec<u8>>,
+    #[serde(skip)]
+    pub unlocked_key: Option<VolumeKey>,
 }
 
 #[cfg(feature = "_open")]
 impl LuksDevice {
+    /// Unlocks the device with a passphrase, storing the volume key in the device.
+    pub fn unlock(&mut self, keyslot_id: &str, key: &Key) -> Result<(), LuksError> {
+        let volume_key = self.get_volume_key(keyslot_id, key)?;
+        self.unlocked_key = Some(volume_key);
+
+        if self.verify(keyslot_id)? {
+            Ok(())
+        } else {
+            self.unlocked_key = None;
+            Err(LuksError::Kdf("Passphrase verification failed".to_string()))
+        }
+    }
+
     /// Writes the LUKS device to a writer.
     pub fn to_writer<W: Write + Seek>(&self, mut writer: W) -> Result<(), LuksError> {
         self.header.to_writer(&mut writer)?;
@@ -56,8 +71,14 @@ impl LuksDevice {
         Ok(())
     }
 
-    /// Verifies that a passphrase can decrypt a specific keyslot.
-    pub fn verify(&self, keyslot_id: &str, key: &Key) -> Result<bool, LuksError> {
+    /// Verifies that the current unlocked volume key matches a specific keyslot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuksError::Locked` if the device has not been unlocked.
+    pub fn verify(&self, keyslot_id: &str) -> Result<bool, LuksError> {
+        let volume_key = self.unlocked_key.as_ref().ok_or(LuksError::Locked)?;
+
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -82,8 +103,6 @@ impl LuksDevice {
                 ..
             } => (hash, salt, digest, iterations),
         };
-
-        let volume_key = self.get_volume_key(keyslot_id, key)?;
 
         // 5. Verify the volume key using the digest
         let kdf_digest_salt = base64::engine::general_purpose::STANDARD
@@ -211,12 +230,9 @@ impl LuksDevice {
     }
 
     /// Maps the LUKS device using dmsetup.
-    pub fn map_with_dmsetup(
-        &self,
-        name: &str,
-        volume_key: &VolumeKey,
-        backing_device: &Path,
-    ) -> Result<(), LuksError> {
+    pub fn map_with_dmsetup(&self, name: &str, backing_device: &Path) -> Result<(), LuksError> {
+        let volume_key = self.unlocked_key.as_ref().ok_or(LuksError::Locked)?;
+
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -477,6 +493,8 @@ pub enum LuksError {
     Kdf(String),
     #[error("dmsetup failed: {0}")]
     DmSetup(String),
+    #[error("Device is locked")]
+    Locked,
 }
 
 /// A 64-bit unsigned integer that is represented as a decimal string in JSON.
@@ -1089,7 +1107,11 @@ impl LuksHeader {
             }
         }
 
-        Ok(LuksDevice { header, keyslots })
+        Ok(LuksDevice {
+            header,
+            keyslots,
+            unlocked_key: None,
+        })
     }
 }
 
@@ -1423,6 +1445,7 @@ mod tests {
         let device = LuksDevice {
             header: LuksHeader::V2(header),
             keyslots: captured_keyslots,
+            unlocked_key: None,
         };
 
         // 2. Write to buffer
@@ -1431,12 +1454,11 @@ mod tests {
 
         // 3. Read back and verify
         buf.set_position(0);
-        let read_device = LuksHeader::open(&mut buf).expect("open failed");
+        let mut read_device = LuksHeader::open(&mut buf).expect("open failed");
 
         let key = Key::from(String::from_utf8_lossy(passphrase).to_string());
-        assert!(read_device.verify("0", &key).expect("verify failed"));
-        let wrong_key = Key::from("wrong passphrase");
-        assert!(!read_device.verify("0", &wrong_key).expect("verify failed"));
+        read_device.unlock("0", &key).expect("unlock failed");
+        assert!(read_device.verify("0").expect("verify failed"));
     }
 
     #[test]
@@ -1567,6 +1589,7 @@ mod tests {
         let mut device = LuksDevice {
             header: LuksHeader::V2(header),
             keyslots: captured_keyslots,
+            unlocked_key: None,
         };
 
         // 2. Change passphrase
@@ -1575,22 +1598,152 @@ mod tests {
             .expect("change_passphrase failed");
 
         // 3. Verify
-        assert!(
-            device
-                .verify("0", &new_key)
-                .expect("verify with new passphrase failed")
-        );
-        assert!(
-            !device
-                .verify("0", &old_key)
-                .expect("verify with old passphrase failed")
-        );
+        device.unlock("0", &new_key).expect("unlock failed");
+        assert!(device.verify("0").expect("verify with new passphrase failed"));
+
+        device
+            .unlock("0", &old_key)
+            .expect_err("unlock with old passphrase should fail");
 
         // 4. Verify volume key is still the same
         let derived_volume_key = device
             .get_volume_key("0", &new_key)
             .expect("get_volume_key failed");
         assert_eq!(volume_key, derived_volume_key.expose_bytes());
+    }
+
+    #[test]
+    #[cfg(feature = "_open")]
+    fn test_unlock() {
+        use aes::cipher::KeyInit;
+        use base64::Engine;
+        use rand::Rng;
+        use xts_mode::{Xts128, get_tweak_default};
+        let mut rng = rand::rng();
+
+        // 1. Setup metadata
+        let mut salt = [0u8; LUKS2_SALT_SIZE];
+        rng.fill(&mut salt);
+
+        let volume_key_size = AES128_KEY_SIZE * 2;
+        let volume_key = vec![0x42u8; volume_key_size];
+        let passphrase = "correct horse battery staple";
+        let key = Key::from(passphrase);
+
+        // Keyslot 0
+        let mut keyslot_salt = [0u8; KDF_SALT_SIZE];
+        rng.fill(&mut keyslot_salt);
+        let keyslot_salt_b64 = base64::engine::general_purpose::STANDARD.encode(keyslot_salt);
+
+        let kdf = Luks2Kdf::Pbkdf2 {
+            hash: HASH_SHA256.to_string(),
+            iterations: 1000,
+            salt: keyslot_salt_b64,
+        };
+
+        let keyslot_key = crate::kdf::derive_key(&kdf, key.expose_bytes(), &salt, volume_key_size).unwrap();
+
+        // AF split the volume key
+        let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
+        rng.fill(&mut random_stripes[..]);
+        let encrypted_keyslot_data = crate::af::split(
+            &volume_key,
+            HASH_SHA256,
+            LUKS1_AF_STRIPES,
+            volume_key_size,
+            random_stripes,
+        )
+        .unwrap();
+
+        // Encrypt the AF stripes with the keyslot key
+        let mut encrypted_data = encrypted_keyslot_data.clone();
+        let cipher_1 = aes::Aes128::new_from_slice(&keyslot_key[0..AES128_KEY_SIZE]).unwrap();
+        let cipher_2 = aes::Aes128::new_from_slice(&keyslot_key[AES128_KEY_SIZE..AES128_KEY_SIZE * 2]).unwrap();
+        let xts = Xts128::new(cipher_1, cipher_2);
+        for (i, chunk) in encrypted_data.chunks_mut(SECTOR_SIZE).enumerate() {
+            xts.encrypt_area(chunk, SECTOR_SIZE, (i as u64).into(), |t| get_tweak_default(t));
+        }
+
+        let keyslot = Luks2Keyslot::Luks2 {
+            key_size: Luks2KeySize::Size32,
+            priority: Some(Luks2KeyslotPriority::Normal),
+            af: Luks2Af {
+                af_type: Luks2AfType::Luks1,
+                stripes: LUKS1_AF_STRIPES,
+                hash: HASH_SHA256.to_string(),
+            },
+            area: Luks2Area::Raw {
+                encryption: Luks2AreaEncryption::AesXtsPlain64,
+                key_size: Luks2KeySize::Size32,
+                offset: Luks2U64(32768),
+                size: Luks2U64(encrypted_data.len() as u64),
+            },
+            kdf,
+        };
+
+        // Digest
+        let mut digest_salt = [0u8; KDF_SALT_SIZE];
+        rng.fill(&mut digest_salt);
+        let digest_salt_b64 = base64::engine::general_purpose::STANDARD.encode(digest_salt);
+
+        let mut expected_digest = vec![0u8; SHA256_DIGEST_SIZE];
+        pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(&volume_key, &digest_salt, 1000, &mut expected_digest).unwrap();
+        let expected_digest_b64 = base64::engine::general_purpose::STANDARD.encode(expected_digest);
+
+        let digest = Luks2Digest::Pbkdf2 {
+            keyslots: vec!["0".to_string()],
+            segments: vec!["0".to_string()],
+            hash: HASH_SHA256.to_string(),
+            iterations: 1000,
+            salt: digest_salt_b64,
+            digest: expected_digest_b64,
+        };
+
+        let mut keyslots = HashMap::new();
+        keyslots.insert("0".to_string(), keyslot);
+
+        let mut digests = HashMap::new();
+        digests.insert("0".to_string(), digest);
+
+        let header = Luks2Header {
+            version: 2,
+            hdr_size: 0,
+            seqid: 1,
+            label: "test".to_string(),
+            checksum_alg: "sha256".to_string(),
+            salt,
+            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            subsystem: "test".to_string(),
+            hdr_offset: 0,
+            checksum: [0u8; LUKS2_CHECKSUM_SIZE],
+            metadata: Luks2Metadata {
+                keyslots,
+                tokens: HashMap::new(),
+                segments: HashMap::new(),
+                digests,
+                config: Luks2Config {
+                    json_size: Luks2U64(LUKS2_DEFAULT_JSON_SIZE),
+                    keyslots_size: Luks2U64(LUKS2_DEFAULT_KEYSLOTS_SIZE),
+                    flags: None,
+                },
+            },
+        };
+
+        let mut captured_keyslots = HashMap::new();
+        captured_keyslots.insert("0".to_string(), encrypted_data);
+
+        let mut device = LuksDevice {
+            header: LuksHeader::V2(header),
+            keyslots: captured_keyslots,
+            unlocked_key: None,
+        };
+
+        // 2. Unlock
+        device.unlock("0", &key).expect("unlock failed");
+
+        // 3. Verify
+        assert!(device.unlocked_key.is_some());
+        assert_eq!(volume_key, device.unlocked_key.as_ref().unwrap().expose_bytes());
     }
 
     #[test]
