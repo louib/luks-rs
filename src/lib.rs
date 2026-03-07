@@ -797,6 +797,11 @@ pub enum Luks2Token {
         keyslots: Vec<String>,
         key_description: String,
     },
+    #[serde(rename = "luks-rs-keyring")]
+    LuksRsKeyring {
+        keyslots: Vec<String>,
+        key_description: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2004,6 +2009,35 @@ mod tests {
 
         let digest0 = metadata.digests.get("0").unwrap();
         assert!(matches!(digest0, Luks2Digest::Pbkdf2 { .. }));
+    }
+
+    #[test]
+    fn test_parse_luks_rs_keyring_token() {
+        let json_data = r#"{
+            "keyslots": {},
+            "tokens": {
+                "0": {
+                    "type": "luks-rs-keyring",
+                    "keyslots": ["0"],
+                    "key_description": "MyLuksRsKey"
+                }
+            },
+            "segments": {},
+            "digests": {},
+            "config": { "json_size": "12288", "keyslots_size": "4161536" }
+        }"#;
+        let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
+        let token = metadata.tokens.get("0").unwrap();
+        if let Luks2Token::LuksRsKeyring {
+            keyslots,
+            key_description,
+        } = token
+        {
+            assert_eq!(keyslots, &vec!["0".to_string()]);
+            assert_eq!(key_description, "MyLuksRsKey");
+        } else {
+            panic!("Expected LuksRsKeyring token");
+        }
     }
 
     #[test]

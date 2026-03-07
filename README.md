@@ -4,6 +4,9 @@
 [![Documentation](https://docs.rs/luks/badge.svg)](https://docs.rs/luks/)
 [![Build Status](https://github.com/louib/luks-rs/actions/workflows/on-merge.yaml/badge.svg?branch=main)](https://github.com/louib/luks-rs/actions/workflows/on-merge.yaml)
 
+> [!CAUTION]
+> This library is still experimental and under active development. APIs may change and it should not yet be used for production data without careful consideration.
+
 Pure-Rust Library for the Linux Unified Key Setup
 
 ## Examples
@@ -13,6 +16,11 @@ Check the [examples](examples/) directory for usage. You can run them with:
 ```bash
 cargo run --example read_header -- /dev/sda1
 ```
+
+## Features
+
+- **Pure-Rust**: The library is implemented entirely in Rust, which allows for easy static compilation, for example, using the `musl` target. This simplifies deployment and integration in various environments.
+- **Custom Token Types**: The library introduces its own specialized token type, `luks-rs-keyring`. While it currently shares the same structure as the standard `luks2-keyring`, this unique identifier allows the library to recognize and handle tokens specifically created for its use.
 
 ## References
 
