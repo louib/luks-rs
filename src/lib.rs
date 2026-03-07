@@ -24,7 +24,7 @@ pub mod kdf;
 pub mod key;
 
 pub use kdf::derive_key;
-pub use key::Key;
+pub use key::{Key, VolumeKey};
 
 #[cfg(feature = "_open")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +97,7 @@ impl LuksDevice {
         let mut verification_output = vec![0u8; expected_bytes.len()];
         if digest_hash == HASH_SHA256 {
             pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(
-                &volume_key,
+                volume_key.expose_bytes(),
                 &kdf_digest_salt,
                 *digest_iterations,
                 &mut verification_output,
@@ -105,7 +105,7 @@ impl LuksDevice {
             .map_err(|e| LuksError::Kdf(format!("PBKDF2 SHA256 error: {}", e)))?;
         } else if digest_hash == HASH_SHA512 {
             pbkdf2::pbkdf2::<hmac::Hmac<Sha512>>(
-                &volume_key,
+                volume_key.expose_bytes(),
                 &kdf_digest_salt,
                 *digest_iterations,
                 &mut verification_output,
@@ -122,7 +122,7 @@ impl LuksDevice {
     }
 
     /// Derives the volume key using a passphrase and a specific keyslot.
-    pub fn get_volume_key(&self, keyslot_id: &str, key: &Key) -> Result<Vec<u8>, LuksError> {
+    pub fn get_volume_key(&self, keyslot_id: &str, key: &Key) -> Result<VolumeKey, LuksError> {
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -201,19 +201,20 @@ impl LuksDevice {
         }
 
         // 4. Merge AF stripes to get the volume key
-        crate::af::merge(
+        let volume_key_bytes = crate::af::merge(
             &decrypted_data[0..(key_size as u64 * af.stripes as u64) as usize],
             &af.hash,
             af.stripes,
             key_size as usize,
-        )
+        )?;
+        VolumeKey::new(volume_key_bytes)
     }
 
     /// Maps the LUKS device using dmsetup.
     pub fn map_with_dmsetup(
         &self,
         name: &str,
-        volume_key: &[u8],
+        volume_key: &VolumeKey,
         backing_device: &Path,
     ) -> Result<(), LuksError> {
         let h2 = match &self.header {
@@ -255,7 +256,7 @@ impl LuksDevice {
             "0 {} crypt {} {} {} {} {}\n",
             num_sectors,
             encryption,
-            to_hex(volume_key),
+            to_hex(volume_key.expose_bytes()),
             iv_tweak.0,
             backing_device.to_string_lossy(),
             offset.0 / SECTOR_SIZE as u64
@@ -294,7 +295,7 @@ impl LuksDevice {
         self.update_keyslot(keyslot_id, new_key, &volume_key)
     }
 
-    fn update_keyslot(&mut self, keyslot_id: &str, key: &Key, volume_key: &[u8]) -> Result<(), LuksError> {
+    fn update_keyslot(&mut self, keyslot_id: &str, key: &Key, volume_key: &VolumeKey) -> Result<(), LuksError> {
         let h2 = match &mut self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -343,9 +344,16 @@ impl LuksDevice {
         let keyslot_key = crate::kdf::derive_key(kdf, key.expose_bytes(), &h2.salt, key_size as usize)?;
 
         // 3. AF-split the volume key
-        let mut random_stripes = vec![0u8; (volume_key.len() as u32 * (af.stripes - 1)) as usize];
+        let mut random_stripes =
+            vec![0u8; (volume_key.expose_bytes().len() as u32 * (af.stripes - 1)) as usize];
         rand::rng().fill(&mut random_stripes[..]);
-        let split_data = crate::af::split(volume_key, &af.hash, af.stripes, volume_key.len(), random_stripes)?;
+        let split_data = crate::af::split(
+            volume_key.expose_bytes(),
+            &af.hash,
+            af.stripes,
+            volume_key.expose_bytes().len(),
+            random_stripes,
+        )?;
 
         // 4. Encrypt the area
         if *encryption != Luks2AreaEncryption::AesXtsPlain64 {
@@ -1582,7 +1590,7 @@ mod tests {
         let derived_volume_key = device
             .get_volume_key("0", &new_key)
             .expect("get_volume_key failed");
-        assert_eq!(volume_key, derived_volume_key);
+        assert_eq!(volume_key, derived_volume_key.expose_bytes());
     }
 
     #[test]
