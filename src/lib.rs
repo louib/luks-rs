@@ -24,7 +24,7 @@ pub mod kdf;
 pub mod key;
 
 pub use kdf::derive_key;
-pub use key::{Key, VolumeKey};
+pub use key::{UnlockKey, VolumeKey};
 
 #[cfg(feature = "_open")]
 #[derive(Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub struct LuksDevice {
 #[cfg(feature = "_open")]
 impl LuksDevice {
     /// Unlocks the device with a passphrase, storing the volume key in the device.
-    pub fn unlock(&mut self, keyslot_id: &str, key: &Key) -> Result<(), LuksError> {
+    pub fn unlock(&mut self, keyslot_id: &str, key: &UnlockKey) -> Result<(), LuksError> {
         let volume_key = self.get_volume_key(keyslot_id, key)?;
         self.unlocked_key = Some(volume_key);
 
@@ -141,7 +141,7 @@ impl LuksDevice {
     }
 
     /// Derives the volume key using a passphrase and a specific keyslot.
-    pub fn get_volume_key(&self, keyslot_id: &str, key: &Key) -> Result<VolumeKey, LuksError> {
+    pub fn get_volume_key(&self, keyslot_id: &str, key: &UnlockKey) -> Result<VolumeKey, LuksError> {
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -304,14 +304,19 @@ impl LuksDevice {
     pub fn change_passphrase(
         &mut self,
         keyslot_id: &str,
-        old_key: &Key,
-        new_key: &Key,
+        old_key: &UnlockKey,
+        new_key: &UnlockKey,
     ) -> Result<(), LuksError> {
         let volume_key = self.get_volume_key(keyslot_id, old_key)?;
         self.update_keyslot(keyslot_id, new_key, &volume_key)
     }
 
-    fn update_keyslot(&mut self, keyslot_id: &str, key: &Key, volume_key: &VolumeKey) -> Result<(), LuksError> {
+    fn update_keyslot(
+        &mut self,
+        keyslot_id: &str,
+        key: &UnlockKey,
+        volume_key: &VolumeKey,
+    ) -> Result<(), LuksError> {
         let h2 = match &mut self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -895,16 +900,16 @@ pub struct Luks2Metadata {
 /// A LUKS device UUID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct LuksUuid(String);
+pub struct LuksDeviceUuid(String);
 
-impl LuksUuid {
+impl LuksDeviceUuid {
     /// Returns the UUID as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-impl FromStr for LuksUuid {
+impl FromStr for LuksDeviceUuid {
     type Err = LuksError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -925,17 +930,17 @@ impl FromStr for LuksUuid {
                 s
             )));
         }
-        Ok(LuksUuid(s.to_string()))
+        Ok(LuksDeviceUuid(s.to_string()))
     }
 }
 
-impl fmt::Display for LuksUuid {
+impl fmt::Display for LuksDeviceUuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl PartialEq<&str> for LuksUuid {
+impl PartialEq<&str> for LuksDeviceUuid {
     fn eq(&self, other: &&str) -> bool {
         &self.0 == *other
     }
@@ -950,7 +955,7 @@ pub struct Luks2Header {
     pub checksum_alg: String,
     #[serde(with = "serde_arrays")]
     pub salt: [u8; LUKS2_SALT_SIZE],
-    pub uuid: LuksUuid,
+    pub uuid: LuksDeviceUuid,
     pub subsystem: String,
     pub hdr_offset: u64,
     #[serde(with = "serde_arrays")]
@@ -1165,7 +1170,7 @@ impl LuksHeader {
 
                 let mut uuid_buf = [0u8; LUKS2_UUID_SIZE];
                 cursor.read_exact(&mut uuid_buf)?;
-                let uuid = LuksUuid::from_str(&String::from_utf8_lossy(&uuid_buf))?;
+                let uuid = LuksDeviceUuid::from_str(&String::from_utf8_lossy(&uuid_buf))?;
 
                 let mut subsystem_buf = [0u8; LUKS2_SUBSYSTEM_SIZE];
                 cursor.read_exact(&mut subsystem_buf)?;
@@ -1427,7 +1432,7 @@ mod tests {
             label: "test".to_string(),
             checksum_alg: "sha256".to_string(),
             salt,
-            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
             hdr_offset: 0,
             checksum: [0u8; LUKS2_CHECKSUM_SIZE],
@@ -1461,7 +1466,7 @@ mod tests {
         buf.set_position(0);
         let mut read_device = LuksHeader::open(&mut buf).expect("open failed");
 
-        let key = Key::from(String::from_utf8_lossy(passphrase).to_string());
+        let key = UnlockKey::from(String::from_utf8_lossy(passphrase).to_string());
         read_device.unlock("0", &key).expect("unlock failed");
         assert!(read_device.verify("0").expect("verify failed"));
     }
@@ -1485,8 +1490,8 @@ mod tests {
         let volume_key = vec![0x42u8; volume_key_size];
         let old_passphrase = "old passphrase";
         let new_passphrase = "new passphrase";
-        let old_key = Key::from(old_passphrase);
-        let new_key = Key::from(new_passphrase);
+        let old_key = UnlockKey::from(old_passphrase);
+        let new_key = UnlockKey::from(new_passphrase);
 
         // Keyslot 0
         let mut keyslot_salt = [0u8; KDF_SALT_SIZE];
@@ -1571,7 +1576,7 @@ mod tests {
             label: "test".to_string(),
             checksum_alg: "sha256".to_string(),
             salt,
-            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
             hdr_offset: 0,
             checksum: [0u8; LUKS2_CHECKSUM_SIZE],
@@ -1633,7 +1638,7 @@ mod tests {
         let volume_key_size = AES128_KEY_SIZE * 2;
         let volume_key = vec![0x42u8; volume_key_size];
         let passphrase = "correct horse battery staple";
-        let key = Key::from(passphrase);
+        let key = UnlockKey::from(passphrase);
 
         // Keyslot 0
         let mut keyslot_salt = [0u8; KDF_SALT_SIZE];
@@ -1717,7 +1722,7 @@ mod tests {
             label: "test".to_string(),
             checksum_alg: "sha256".to_string(),
             salt,
-            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
             hdr_offset: 0,
             checksum: [0u8; LUKS2_CHECKSUM_SIZE],
@@ -1762,7 +1767,7 @@ mod tests {
             label: "test".to_string(),
             checksum_alg: HASH_SHA256.to_string(),
             salt,
-            uuid: LuksUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
             hdr_offset: 0,
             checksum: [0u8; LUKS2_CHECKSUM_SIZE], // Will be calculated in to_writer
@@ -1880,11 +1885,11 @@ mod tests {
 
     #[test]
     fn test_luks_uuid_parsing() {
-        assert!(LuksUuid::from_str("550e8400-e29b-41d4-a716-446655440000").is_ok());
-        assert!(LuksUuid::from_str("abcd").is_ok());
-        assert!(LuksUuid::from_str("").is_err());
-        assert!(LuksUuid::from_str("invalid-char!").is_err());
-        assert!(LuksUuid::from_str(&"a".repeat(40)).is_err());
+        assert!(LuksDeviceUuid::from_str("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(LuksDeviceUuid::from_str("abcd").is_ok());
+        assert!(LuksDeviceUuid::from_str("").is_err());
+        assert!(LuksDeviceUuid::from_str("invalid-char!").is_err());
+        assert!(LuksDeviceUuid::from_str(&"a".repeat(40)).is_err());
     }
 
     #[test]

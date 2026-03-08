@@ -6,9 +6,9 @@ use secrecy::{ExposeSecret, SecretBox};
 /// is protected while in memory and is automatically zeroed when no longer needed.
 /// It intentionally does not implement `Debug` to prevent accidental exposure of
 /// the unlock key in logs or error reports.
-pub struct Key(SecretBox<Vec<u8>>);
+pub struct UnlockKey(SecretBox<Vec<u8>>);
 
-impl Key {
+impl UnlockKey {
     /// Creates a new LUKS unlock key from a passphrase.
     pub fn from_passphrase(passphrase: String) -> Self {
         Self(SecretBox::new(Box::new(passphrase.into_bytes())))
@@ -20,13 +20,13 @@ impl Key {
     }
 }
 
-impl From<String> for Key {
+impl From<String> for UnlockKey {
     fn from(passphrase: String) -> Self {
         Self::from_passphrase(passphrase)
     }
 }
 
-impl From<&str> for Key {
+impl From<&str> for UnlockKey {
     fn from(passphrase: &str) -> Self {
         Self::from_passphrase(passphrase.to_string())
     }
@@ -34,7 +34,7 @@ impl From<&str> for Key {
 
 /// A LUKS volume key used to encrypt and decrypt the actual data on the device.
 ///
-/// This key is derived from a `Key` (passphrase) and a keyslot.
+/// This key is derived from an `UnlockKey` (passphrase) and a keyslot.
 /// It is protected while in memory and is automatically zeroed when no longer needed.
 pub struct VolumeKey(SecretBox<Vec<u8>>);
 

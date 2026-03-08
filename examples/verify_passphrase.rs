@@ -25,7 +25,7 @@ fn main() {
 
     let passphrase = rpassword::prompt_password("Enter passphrase: ").unwrap();
     println!("passphrase is \"{}\"", passphrase);
-    let key = luks::Key::from(passphrase);
+    let key = luks::UnlockKey::from(passphrase);
 
     if args.len() > 2 {
         let keyslot_id = &args[2];

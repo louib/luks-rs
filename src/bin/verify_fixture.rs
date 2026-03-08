@@ -1,4 +1,4 @@
-use luks::{Key, LuksDevice};
+use luks::{LuksDevice, UnlockKey};
 use std::env;
 use std::io;
 use std::process;
@@ -31,7 +31,7 @@ fn main() {
     if passphrase.ends_with('\r') {
         passphrase.pop();
     }
-    let key = Key::from(passphrase);
+    let key = UnlockKey::from(passphrase);
 
     if args.len() > 2 {
         let keyslot_id = &args[2];
