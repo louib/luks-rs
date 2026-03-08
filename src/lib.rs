@@ -429,8 +429,8 @@ pub const LUKS_VERSION_SIZE: usize = 2;
 
 /// Size of the LUKS2 label field in bytes.
 pub const LUKS2_LABEL_SIZE: usize = 48;
-/// Size of the LUKS2 checksum algorithm field in bytes.
-pub const LUKS2_CHECKSUM_ALG_SIZE: usize = 32;
+/// Size of the LUKS2 checksum algorithm ID field in bytes.
+pub const LUKS2_CHECKSUM_ALG_ID_LEN: usize = 32;
 /// Size of the LUKS2 salt field in bytes.
 pub const LUKS2_SALT_SIZE: usize = 64;
 /// Size of the LUKS2 uuid field in bytes.
@@ -559,6 +559,46 @@ impl TryFrom<u64> for Luks2KeySize {
             32 => Ok(Luks2KeySize::Size32),
             64 => Ok(Luks2KeySize::Size64),
             _ => Err(format!("Unsupported key size: {}", val)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Luks2HashAlg {
+    Sha256,
+    Sha512,
+}
+
+impl Luks2HashAlg {
+    /// Returns the algorithm name as a byte array padded with null bytes.
+    pub fn to_bytes(&self) -> [u8; LUKS2_CHECKSUM_ALG_ID_LEN] {
+        let mut res = [0u8; LUKS2_CHECKSUM_ALG_ID_LEN];
+        let s = self.to_string();
+        let b = s.as_bytes();
+        let len = std::cmp::min(b.len(), LUKS2_CHECKSUM_ALG_ID_LEN);
+        res[..len].copy_from_slice(&b[..len]);
+        res
+    }
+}
+
+impl fmt::Display for Luks2HashAlg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Luks2HashAlg::Sha256 => write!(f, "sha256"),
+            Luks2HashAlg::Sha512 => write!(f, "sha512"),
+        }
+    }
+}
+
+impl FromStr for Luks2HashAlg {
+    type Err = LuksError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim_matches('\0') {
+            "sha256" => Ok(Luks2HashAlg::Sha256),
+            "sha512" => Ok(Luks2HashAlg::Sha512),
+            _ => Err(LuksError::UnsupportedChecksumAlg(s.to_string())),
         }
     }
 }
@@ -952,7 +992,7 @@ pub struct Luks2Header {
     pub hdr_size: u64,
     pub seqid: u64,
     pub label: String,
-    pub checksum_alg: String,
+    pub checksum_alg: Luks2HashAlg,
     #[serde(with = "serde_arrays")]
     pub salt: [u8; LUKS2_SALT_SIZE],
     pub uuid: LuksDeviceUuid,
@@ -1023,11 +1063,7 @@ impl Luks2Header {
         cursor.write_all(&label_buf)?;
 
         // Write checksum algorithm (32 bytes)
-        let mut csum_alg_buf = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
-        let csum_alg_bytes = self.checksum_alg.as_bytes();
-        let csum_alg_len = std::cmp::min(csum_alg_bytes.len(), LUKS2_CHECKSUM_ALG_SIZE);
-        csum_alg_buf[..csum_alg_len].copy_from_slice(&csum_alg_bytes[..csum_alg_len]);
-        cursor.write_all(&csum_alg_buf)?;
+        cursor.write_all(&self.checksum_alg.to_bytes())?;
 
         // Write salt (64 bytes)
         cursor.write_all(&self.salt)?;
@@ -1050,7 +1086,7 @@ impl Luks2Header {
         cursor.write_u64::<BigEndian>(self.hdr_offset)?;
 
         // Calculate checksum
-        if self.checksum_alg == HASH_SHA256 {
+        if self.checksum_alg == Luks2HashAlg::Sha256 {
             let mut hasher = Sha256::new();
             // The checksum is calculated with the checksum field zeroed out
             // binary_header already has it as zeroed out because it was initialized with vec![0u8; LUKS2_BINARY_HEADER_SIZE]
@@ -1062,7 +1098,7 @@ impl Luks2Header {
             binary_header[LUKS2_CHECKSUM_OFFSET..LUKS2_CHECKSUM_OFFSET + SHA256_DIGEST_SIZE]
                 .copy_from_slice(calculated.as_slice());
         } else {
-            return Err(LuksError::UnsupportedChecksumAlg(self.checksum_alg.clone()));
+            return Err(LuksError::UnsupportedChecksumAlg(self.checksum_alg.to_string()));
         }
 
         // Write binary header to writer
@@ -1159,11 +1195,9 @@ impl LuksHeader {
                 cursor.read_exact(&mut label_buf)?;
                 let label = String::from_utf8_lossy(&label_buf).trim_matches('\0').to_string();
 
-                let mut checksum_alg_buf = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
+                let mut checksum_alg_buf = [0u8; LUKS2_CHECKSUM_ALG_ID_LEN];
                 cursor.read_exact(&mut checksum_alg_buf)?;
-                let checksum_alg = String::from_utf8_lossy(&checksum_alg_buf)
-                    .trim_matches('\0')
-                    .to_string();
+                let checksum_alg = Luks2HashAlg::from_str(&String::from_utf8_lossy(&checksum_alg_buf))?;
 
                 let mut salt = [0u8; LUKS2_SALT_SIZE];
                 cursor.read_exact(&mut salt)?;
@@ -1200,7 +1234,7 @@ impl LuksHeader {
                 reader.read_exact(&mut json_buf)?;
 
                 // Verify checksum
-                if checksum_alg == "sha256" {
+                if checksum_alg == Luks2HashAlg::Sha256 {
                     let mut hasher = Sha256::new();
 
                     // The checksum is calculated with the checksum field itself zeroed out
@@ -1220,7 +1254,7 @@ impl LuksHeader {
                         });
                     }
                 } else {
-                    return Err(LuksError::UnsupportedChecksumAlg(checksum_alg));
+                    return Err(LuksError::UnsupportedChecksumAlg(checksum_alg.to_string()));
                 }
 
                 // Parse JSON
@@ -1281,9 +1315,7 @@ mod tests {
             label[..4].copy_from_slice(b"test");
             cursor.write_all(&label).unwrap();
 
-            let mut csum_alg = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
-            csum_alg[..HASH_SHA256.len()].copy_from_slice(HASH_SHA256.as_bytes());
-            cursor.write_all(&csum_alg).unwrap();
+            cursor.write_all(&Luks2HashAlg::Sha256.to_bytes()).unwrap();
 
             cursor.write_all(&[0u8; LUKS2_SALT_SIZE]).unwrap();
 
@@ -1430,7 +1462,7 @@ mod tests {
             hdr_size: 0, // Will be recalculated
             seqid: 1,
             label: "test".to_string(),
-            checksum_alg: "sha256".to_string(),
+            checksum_alg: Luks2HashAlg::Sha256,
             salt,
             uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
@@ -1574,7 +1606,7 @@ mod tests {
             hdr_size: 0,
             seqid: 1,
             label: "test".to_string(),
-            checksum_alg: "sha256".to_string(),
+            checksum_alg: Luks2HashAlg::Sha256,
             salt,
             uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
@@ -1720,7 +1752,7 @@ mod tests {
             hdr_size: 0,
             seqid: 1,
             label: "test".to_string(),
-            checksum_alg: "sha256".to_string(),
+            checksum_alg: Luks2HashAlg::Sha256,
             salt,
             uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
@@ -1765,7 +1797,7 @@ mod tests {
             hdr_size: 16384, // Will be recalculated in to_writer anyway
             seqid: 1,
             label: "test".to_string(),
-            checksum_alg: HASH_SHA256.to_string(),
+            checksum_alg: Luks2HashAlg::Sha256,
             salt,
             uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
             subsystem: "test".to_string(),
@@ -1850,9 +1882,7 @@ mod tests {
             let label = [0u8; LUKS2_LABEL_SIZE];
             cursor.write_all(&label).unwrap();
 
-            let mut csum_alg = [0u8; LUKS2_CHECKSUM_ALG_SIZE];
-            csum_alg[..HASH_SHA256.len()].copy_from_slice(HASH_SHA256.as_bytes());
-            cursor.write_all(&csum_alg).unwrap();
+            cursor.write_all(&Luks2HashAlg::Sha256.to_bytes()).unwrap();
 
             cursor.write_all(&[0u8; LUKS2_SALT_SIZE]).unwrap();
 
