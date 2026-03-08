@@ -118,7 +118,7 @@ impl LuksDevice {
             .map_err(|e| LuksError::Kdf(format!("Invalid digest base64 in digest: {}", e)))?;
 
         let mut verification_output = vec![0u8; expected_bytes.len()];
-        if digest_hash == HASH_SHA256 {
+        if digest_hash == &Luks2HashAlg::Sha256 {
             pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(
                 volume_key.expose_bytes(),
                 &kdf_digest_salt,
@@ -126,7 +126,7 @@ impl LuksDevice {
                 &mut verification_output,
             )
             .map_err(|e| LuksError::Kdf(format!("PBKDF2 SHA256 error: {}", e)))?;
-        } else if digest_hash == HASH_SHA512 {
+        } else if digest_hash == &Luks2HashAlg::Sha512 {
             pbkdf2::pbkdf2::<hmac::Hmac<Sha512>>(
                 volume_key.expose_bytes(),
                 &kdf_digest_salt,
@@ -135,10 +135,7 @@ impl LuksDevice {
             )
             .map_err(|e| LuksError::Kdf(format!("PBKDF2 SHA512 error: {}", e)))?;
         } else {
-            return Err(LuksError::UnsupportedChecksumAlg(format!(
-                "Digest hash {} is not supported",
-                digest_hash
-            )));
+            return Err(LuksError::UnsupportedChecksumAlg(digest_hash.to_string()));
         }
 
         Ok(verification_output == expected_bytes)
@@ -574,7 +571,7 @@ pub struct Luks2Af {
     #[serde(rename = "type")]
     pub af_type: Luks2AfType,
     pub stripes: u32,
-    pub hash: String,
+    pub hash: Luks2HashAlg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,7 +608,7 @@ pub enum Luks2Area {
     Checksum {
         offset: Luks2U64,
         size: Luks2U64,
-        hash: String,
+        hash: Luks2HashAlg,
         sector_size: u32,
     },
     Datashift {
@@ -629,7 +626,7 @@ pub enum Luks2Area {
     DatashiftChecksum {
         offset: Luks2U64,
         size: Luks2U64,
-        hash: String,
+        hash: Luks2HashAlg,
         sector_size: u32,
         shift_size: Luks2U64,
     },
@@ -677,7 +674,7 @@ pub enum Luks2Kdf {
         salt: String,
     },
     Pbkdf2 {
-        hash: String,
+        hash: Luks2HashAlg,
         iterations: u32,
         salt: String,
     },
@@ -853,7 +850,7 @@ pub enum Luks2Digest {
     Pbkdf2 {
         keyslots: Vec<String>,
         segments: Vec<String>,
-        hash: String,
+        hash: Luks2HashAlg,
         iterations: u32,
         salt: String,
         digest: String,
@@ -1329,7 +1326,7 @@ mod tests {
         let keyslot_salt_b64 = base64::engine::general_purpose::STANDARD.encode(keyslot_salt);
 
         let kdf = Luks2Kdf::Pbkdf2 {
-            hash: HASH_SHA256.to_string(),
+            hash: Luks2HashAlg::Sha256,
             iterations: 1000,
             salt: keyslot_salt_b64,
         };
@@ -1341,7 +1338,7 @@ mod tests {
         rng.fill(&mut random_stripes[..]);
         let encrypted_keyslot_data = crate::af::split(
             &volume_key,
-            HASH_SHA256,
+            &Luks2HashAlg::Sha256,
             LUKS1_AF_STRIPES,
             volume_key_size,
             random_stripes,
@@ -1363,7 +1360,7 @@ mod tests {
             af: Luks2Af {
                 af_type: Luks2AfType::Luks1,
                 stripes: LUKS1_AF_STRIPES,
-                hash: HASH_SHA256.to_string(),
+                hash: Luks2HashAlg::Sha256,
             },
             area: Luks2Area::Raw {
                 encryption: Luks2AreaEncryption::AesXtsPlain64,
@@ -1386,7 +1383,7 @@ mod tests {
         let digest = Luks2Digest::Pbkdf2 {
             keyslots: vec!["0".to_string()],
             segments: vec!["0".to_string()],
-            hash: HASH_SHA256.to_string(),
+            hash: Luks2HashAlg::Sha256,
             iterations: 1000,
             salt: digest_salt_b64,
             digest: expected_digest_b64,
@@ -1483,7 +1480,7 @@ mod tests {
         let keyslot_salt_b64 = base64::engine::general_purpose::STANDARD.encode(keyslot_salt);
 
         let kdf = Luks2Kdf::Pbkdf2 {
-            hash: HASH_SHA256.to_string(),
+            hash: Luks2HashAlg::Sha256,
             iterations: TEST_ITERATIONS,
             salt: keyslot_salt_b64,
         };
@@ -1495,7 +1492,7 @@ mod tests {
         rng.fill(&mut random_stripes[..]);
         let encrypted_keyslot_data = crate::af::split(
             &volume_key,
-            HASH_SHA256,
+            &Luks2HashAlg::Sha256,
             LUKS1_AF_STRIPES,
             volume_key_size,
             random_stripes,
@@ -1517,7 +1514,7 @@ mod tests {
             af: Luks2Af {
                 af_type: Luks2AfType::Luks1,
                 stripes: LUKS1_AF_STRIPES,
-                hash: HASH_SHA256.to_string(),
+                hash: Luks2HashAlg::Sha256,
             },
             area: Luks2Area::Raw {
                 encryption: Luks2AreaEncryption::AesXtsPlain64,
@@ -1541,7 +1538,7 @@ mod tests {
         let digest = Luks2Digest::Pbkdf2 {
             keyslots: vec!["0".to_string()],
             segments: vec!["0".to_string()],
-            hash: HASH_SHA256.to_string(),
+            hash: Luks2HashAlg::Sha256,
             iterations: TEST_ITERATIONS,
             salt: digest_salt_b64,
             digest: expected_digest_b64,
@@ -1630,7 +1627,7 @@ mod tests {
         let keyslot_salt_b64 = base64::engine::general_purpose::STANDARD.encode(keyslot_salt);
 
         let kdf = Luks2Kdf::Pbkdf2 {
-            hash: HASH_SHA256.to_string(),
+            hash: Luks2HashAlg::Sha256,
             iterations: 1000,
             salt: keyslot_salt_b64,
         };
@@ -1642,7 +1639,7 @@ mod tests {
         rng.fill(&mut random_stripes[..]);
         let encrypted_keyslot_data = crate::af::split(
             &volume_key,
-            HASH_SHA256,
+            &Luks2HashAlg::Sha256,
             LUKS1_AF_STRIPES,
             volume_key_size,
             random_stripes,
@@ -1664,7 +1661,7 @@ mod tests {
             af: Luks2Af {
                 af_type: Luks2AfType::Luks1,
                 stripes: LUKS1_AF_STRIPES,
-                hash: HASH_SHA256.to_string(),
+                hash: Luks2HashAlg::Sha256,
             },
             area: Luks2Area::Raw {
                 encryption: Luks2AreaEncryption::AesXtsPlain64,
@@ -1687,7 +1684,7 @@ mod tests {
         let digest = Luks2Digest::Pbkdf2 {
             keyslots: vec!["0".to_string()],
             segments: vec!["0".to_string()],
-            hash: HASH_SHA256.to_string(),
+            hash: Luks2HashAlg::Sha256,
             iterations: 1000,
             salt: digest_salt_b64,
             digest: expected_digest_b64,

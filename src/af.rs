@@ -1,13 +1,15 @@
-use crate::{HASH_SHA256, LuksError, SHA256_DIGEST_SIZE};
+use crate::{Luks2HashAlg, LuksError, SHA256_DIGEST_SIZE};
 use sha2::{Digest, Sha256};
 
 /// Merges anti-forensic stripes to retrieve the original data.
-pub fn merge(data: &[u8], hash_alg: &str, stripes: u32, block_size: usize) -> Result<Vec<u8>, LuksError> {
-    if hash_alg != HASH_SHA256 {
-        return Err(LuksError::UnsupportedChecksumAlg(format!(
-            "AF hash {} is not supported",
-            hash_alg
-        )));
+pub fn merge(
+    data: &[u8],
+    hash_alg: &Luks2HashAlg,
+    stripes: u32,
+    block_size: usize,
+) -> Result<Vec<u8>, LuksError> {
+    if hash_alg != &Luks2HashAlg::Sha256 {
+        return Err(LuksError::UnsupportedChecksumAlg(hash_alg.to_string()));
     }
 
     if data.len() < block_size * stripes as usize {
@@ -48,16 +50,13 @@ pub fn merge(data: &[u8], hash_alg: &str, stripes: u32, block_size: usize) -> Re
 /// This is the inverse of [`merge`].
 pub fn split(
     data: &[u8],
-    hash_alg: &str,
+    hash_alg: &Luks2HashAlg,
     stripes: u32,
     block_size: usize,
     mut random_stripes: Vec<u8>,
 ) -> Result<Vec<u8>, LuksError> {
-    if hash_alg != HASH_SHA256 {
-        return Err(LuksError::UnsupportedChecksumAlg(format!(
-            "AF hash {} is not supported",
-            hash_alg
-        )));
+    if hash_alg != &Luks2HashAlg::Sha256 {
+        return Err(LuksError::UnsupportedChecksumAlg(hash_alg.to_string()));
     }
 
     if random_stripes.len() != block_size * (stripes - 1) as usize {
@@ -91,7 +90,7 @@ pub fn split(
     Ok(random_stripes)
 }
 
-fn diffuse(hash_alg: &str, src: &[u8], block_size: usize) -> Result<Vec<u8>, LuksError> {
+fn diffuse(hash_alg: &Luks2HashAlg, src: &[u8], block_size: usize) -> Result<Vec<u8>, LuksError> {
     let hash_len = SHA256_DIGEST_SIZE;
     let blocks = block_size / hash_len;
     let padding = block_size % hash_len;
@@ -112,12 +111,9 @@ fn diffuse(hash_alg: &str, src: &[u8], block_size: usize) -> Result<Vec<u8>, Luk
     Ok(dst)
 }
 
-fn hash_buf(hash_alg: &str, src: &[u8], iv: u32) -> Result<Vec<u8>, LuksError> {
-    if hash_alg != HASH_SHA256 {
-        return Err(LuksError::UnsupportedChecksumAlg(format!(
-            "AF hash {} is not supported",
-            hash_alg
-        )));
+fn hash_buf(hash_alg: &Luks2HashAlg, src: &[u8], iv: u32) -> Result<Vec<u8>, LuksError> {
+    if hash_alg != &Luks2HashAlg::Sha256 {
+        return Err(LuksError::UnsupportedChecksumAlg(hash_alg.to_string()));
     }
 
     let mut hasher = Sha256::new();
@@ -136,13 +132,13 @@ mod tests {
         let block_size = 32;
         let stripes = 10;
         let data = vec![0x42u8; block_size];
-        let hash_alg = "sha256";
+        let hash_alg = Luks2HashAlg::Sha256;
 
         let mut random_stripes = vec![0u8; block_size * (stripes - 1) as usize];
         rand::rng().fill(&mut random_stripes[..]);
 
-        let split_data = split(&data, hash_alg, stripes, block_size, random_stripes).expect("Split failed");
-        let merged_data = merge(&split_data, hash_alg, stripes, block_size).expect("Merge failed");
+        let split_data = split(&data, &hash_alg, stripes, block_size, random_stripes).expect("Split failed");
+        let merged_data = merge(&split_data, &hash_alg, stripes, block_size).expect("Merge failed");
 
         assert_eq!(data, merged_data);
     }

@@ -1,4 +1,4 @@
-use crate::{HASH_SHA256, Luks2Kdf, LuksError};
+use crate::{Luks2HashAlg, Luks2Kdf, LuksError};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose};
 
@@ -66,15 +66,12 @@ pub fn derive_key(
 
             let mut output = vec![0u8; key_size];
 
-            if hash == HASH_SHA256 {
+            if hash == &Luks2HashAlg::Sha256 {
                 pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(passphrase, &salt_bytes, *iterations, &mut output)
                     .map_err(|e| LuksError::Kdf(format!("PBKDF2 error: {}", e)))?;
                 Ok(output)
             } else {
-                Err(LuksError::UnsupportedChecksumAlg(format!(
-                    "PBKDF2 with hash {} is not supported",
-                    hash
-                )))
+                Err(LuksError::UnsupportedChecksumAlg(hash.to_string()))
             }
         }
     }
