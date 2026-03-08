@@ -30,11 +30,17 @@ pub use hash::{
 pub use kdf::derive_key;
 pub use key::{UnlockKey, VolumeKey};
 
+/// A representation of a LUKS device, including its header and keyslots.
+///
+/// This structure holds the primary metadata for the encrypted device.
 #[cfg(feature = "_open")]
 #[derive(Serialize, Deserialize)]
 pub struct LuksDevice {
+    /// The LUKS header (either version 1 or 2).
     pub header: LuksHeader,
+    /// A map of keyslot IDs to their raw, encrypted data area.
     pub keyslots: HashMap<String, Vec<u8>>,
+    /// The volume key, if the device has been successfully unlocked.
     #[serde(skip)]
     pub unlocked_key: Option<VolumeKey>,
 }
@@ -467,26 +473,37 @@ pub const LUKS2_DEFAULT_JSON_SIZE: u64 = 12288;
 /// Default size of the LUKS2 keyslots area in bytes.
 pub const LUKS2_DEFAULT_KEYSLOTS_SIZE: u64 = 4161536;
 
+/// Errors that can occur when working with LUKS devices.
 #[derive(Error, Debug)]
 pub enum LuksError {
+    /// An I/O error occurred.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// The LUKS magic signature is invalid or missing.
     #[error("Invalid LUKS magic: {0:?}")]
     InvalidMagic([u8; LUKS_MAGIC_SIZE]),
+    /// The LUKS version is not supported by this library.
     #[error("Unsupported LUKS version: {0}")]
     UnsupportedVersion(u16),
+    /// An error occurred while parsing JSON metadata.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    /// The LUKS2 header or metadata is malformed or invalid.
     #[error("Invalid LUKS2 header: {0}")]
     InvalidHeader(String),
+    /// The header checksum verification failed.
     #[error("Checksum verification failed: expected {expected}, got {actual}")]
     InvalidChecksum { expected: String, actual: String },
+    /// The requested checksum or hash algorithm is not supported.
     #[error("Unsupported checksum algorithm: {0}")]
     UnsupportedChecksumAlg(String),
+    /// An error occurred during key derivation (KDF).
     #[error("KDF error: {0}")]
     Kdf(String),
+    /// An error occurred when interacting with `dmsetup`.
     #[error("dmsetup failed: {0}")]
     DmSetup(String),
+    /// The operation requires an unlocked device, but it is currently locked.
     #[error("Device is locked")]
     Locked,
 }
@@ -519,10 +536,13 @@ impl<'de> Deserialize<'de> for Luks2U64 {
     }
 }
 
+/// The size of a LUKS2 key in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "u64", try_from = "u64")]
 pub enum Luks2KeySize {
+    /// 32-byte (256-bit) key size.
     Size32 = 32,
+    /// 64-byte (512-bit) key size.
     Size64 = 64,
 }
 
@@ -552,9 +572,11 @@ impl TryFrom<u64> for Luks2KeySize {
     }
 }
 
+/// The type of anti-forensic (AF) algorithm used in LUKS2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Luks2AfType {
+    /// The original LUKS1 AF algorithm.
     Luks1,
 }
 
@@ -566,16 +588,22 @@ impl fmt::Display for Luks2AfType {
     }
 }
 
+/// Anti-forensic (AF) settings for a keyslot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Af {
+    /// The type of AF algorithm.
     #[serde(rename = "type")]
     pub af_type: Luks2AfType,
+    /// The number of AF stripes.
     pub stripes: u32,
+    /// The hash algorithm used for AF.
     pub hash: Luks2HashAlg,
 }
 
+/// The encryption algorithm used for the keyslot area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Luks2AreaEncryption {
+    /// AES in XTS mode with 64-bit sector numbers.
     #[serde(rename = "aes-xts-plain64")]
     AesXtsPlain64,
 }
@@ -588,51 +616,83 @@ impl fmt::Display for Luks2AreaEncryption {
     }
 }
 
+/// A keyslot data area in LUKS2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Luks2Area {
+    /// A raw data area.
     Raw {
+        /// The encryption algorithm used for this area.
         encryption: Luks2AreaEncryption,
+        /// The key size for the area encryption.
         key_size: Luks2KeySize,
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
     },
+    /// No data area.
     None {
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
     },
+    /// A journal area.
     Journal {
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
     },
+    /// A checksum area.
     Checksum {
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
+        /// The hash algorithm used for the checksum.
         hash: Luks2HashAlg,
+        /// The sector size in bytes.
         sector_size: u32,
     },
+    /// A data shift area.
     Datashift {
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
+        /// The shift size in bytes.
         shift_size: Luks2U64,
     },
+    /// A combined data shift and journal area.
     #[serde(rename = "datashift-journal")]
     DatashiftJournal {
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
+        /// The shift size in bytes.
         shift_size: Luks2U64,
     },
+    /// A combined data shift and checksum area.
     #[serde(rename = "datashift-checksum")]
     DatashiftChecksum {
+        /// The offset of the area in bytes.
         offset: Luks2U64,
+        /// The size of the area in bytes.
         size: Luks2U64,
+        /// The hash algorithm used for the checksum.
         hash: Luks2HashAlg,
+        /// The sector size in bytes.
         sector_size: u32,
+        /// The shift size in bytes.
         shift_size: Luks2U64,
     },
 }
 
 impl Luks2Area {
+    /// Returns the offset of the data area in bytes.
     pub fn offset(&self) -> u64 {
         match self {
             Luks2Area::Raw { offset, .. } => offset.0,
@@ -645,6 +705,7 @@ impl Luks2Area {
         }
     }
 
+    /// Returns the size of the data area in bytes.
     pub fn size(&self) -> u64 {
         match self {
             Luks2Area::Raw { size, .. } => size.0,
@@ -658,24 +719,39 @@ impl Luks2Area {
     }
 }
 
+/// Key derivation function (KDF) settings for a keyslot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Kdf {
+    /// Argon2i KDF.
     Argon2i {
+        /// The number of iterations (time).
         time: u32,
+        /// The amount of memory in KiB.
         memory: u32,
+        /// The number of parallel threads.
         cpus: u32,
+        /// The base64-encoded salt.
         salt: String,
     },
+    /// Argon2id KDF.
     Argon2id {
+        /// The number of iterations (time).
         time: u32,
+        /// The amount of memory in KiB.
         memory: u32,
+        /// The number of parallel threads.
         cpus: u32,
+        /// The base64-encoded salt.
         salt: String,
     },
+    /// PBKDF2.
     Pbkdf2 {
+        /// The hash algorithm used.
         hash: Luks2HashAlg,
+        /// The number of iterations.
         iterations: u32,
+        /// The base64-encoded salt.
         salt: String,
     },
 }
@@ -684,7 +760,7 @@ pub enum Luks2Kdf {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "i32", into = "i32")]
 pub enum Luks2KeyslotPriority {
-    /// The keyslot should be ignored except if explicitly stated
+    /// The keyslot should be ignored except if explicitly stated.
     Ignore = 0,
     /// Normal priority.
     Normal = 1,
@@ -710,43 +786,66 @@ impl From<Luks2KeyslotPriority> for i32 {
     }
 }
 
+/// The mode of a reencryption operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Luks2ReencryptMode {
+    /// Reencrypt an already encrypted device.
     Reencrypt,
+    /// Encrypt a plaintext device.
     Encrypt,
+    /// Decrypt an encrypted device.
     Decrypt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// The direction of a reencryption operation.
 pub enum Luks2ReencryptDirection {
+    /// Forward reencryption.
     Forward,
+    /// Backward reencryption.
     Backward,
 }
 
+/// A LUKS2 keyslot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Keyslot {
+    /// A standard LUKS2 keyslot.
     Luks2 {
+        /// The key size in bytes.
         key_size: Luks2KeySize,
+        /// The priority of the keyslot.
         priority: Option<Luks2KeyslotPriority>,
+        /// Anti-forensic settings.
         af: Luks2Af,
+        /// The data area.
         area: Luks2Area,
+        /// KDF settings.
         kdf: Luks2Kdf,
     },
+    /// A reencryption keyslot.
     Reencrypt {
+        /// The reencryption mode.
         mode: Luks2ReencryptMode,
+        /// The reencryption direction.
         direction: Luks2ReencryptDirection,
+        /// The key size.
         key_size: String,
+        /// The priority of the keyslot.
         priority: Option<Luks2KeyslotPriority>,
+        /// Anti-forensic settings.
         af: Luks2Af,
+        /// The data area.
         area: Luks2Area,
+        /// KDF settings.
         kdf: Luks2Kdf,
     },
 }
 
 impl Luks2Keyslot {
+    /// Returns a reference to the data area settings for this keyslot.
     pub fn area(&self) -> &Luks2Area {
         match self {
             Luks2Keyslot::Luks2 { area, .. } => area,
@@ -754,7 +853,11 @@ impl Luks2Keyslot {
         }
     }
 
-    /// Validates the keyslot
+    /// Validates the keyslot settings according to the LUKS2 specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the keyslot settings are invalid.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Luks2Keyslot::Luks2 { area, af, .. } => {
@@ -783,24 +886,34 @@ impl Luks2Keyslot {
     }
 }
 
+/// A LUKS2 token, used to store additional metadata or references to external keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Token {
+    /// A standard Linux kernel keyring token.
     #[serde(rename = "luks2-keyring")]
     Keyring {
+        /// The IDs of the keyslots associated with this token.
         keyslots: Vec<String>,
+        /// The description of the key in the keyring.
         key_description: String,
     },
+    /// A `luks-rs` specific keyring token.
     #[serde(rename = "luks-rs-keyring")]
     LuksRsKeyring {
+        /// The IDs of the keyslots associated with this token.
         keyslots: Vec<String>,
+        /// The description of the key in the keyring.
         key_description: String,
     },
 }
 
+/// The size of a LUKS2 segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Luks2SegmentSize {
+    /// A fixed size in bytes.
     U64(u64),
+    /// A dynamic size that occupies all remaining space on the device.
     Dynamic,
 }
 
@@ -832,35 +945,54 @@ impl<'de> Deserialize<'de> for Luks2SegmentSize {
     }
 }
 
+/// A LUKS2 segment, representing a range of data on the device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Segment {
+    /// A cryptographic segment.
     Crypt {
+        /// The offset of the segment in bytes.
         offset: Luks2U64,
+        /// The IV tweak for the segment.
         iv_tweak: Luks2U64,
+        /// The size of the segment.
         size: Luks2SegmentSize,
+        /// The encryption algorithm used for this segment.
         encryption: String,
+        /// The sector size in bytes.
         sector_size: u32,
     },
 }
 
+/// A LUKS2 digest, used to verify the volume key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Luks2Digest {
+    /// A PBKDF2-based digest.
     Pbkdf2 {
+        /// The IDs of the keyslots associated with this digest.
         keyslots: Vec<String>,
+        /// The IDs of the segments associated with this digest.
         segments: Vec<String>,
+        /// The hash algorithm used.
         hash: Luks2HashAlg,
+        /// The number of iterations.
         iterations: u32,
+        /// The base64-encoded salt.
         salt: String,
+        /// The base64-encoded expected digest.
         digest: String,
     },
 }
 
+/// Global configuration for a LUKS2 device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Config {
+    /// The size of the JSON area in bytes.
     pub json_size: Luks2U64,
+    /// The size of the keyslots area in bytes.
     pub keyslots_size: Luks2U64,
+    /// Any global flags set on the device.
     pub flags: Option<Vec<String>>,
 }
 
@@ -876,13 +1008,19 @@ where
     Ok(keyslots)
 }
 
+/// The complete LUKS2 metadata, typically stored in the JSON area of the header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Metadata {
+    /// A map of keyslot IDs to their settings.
     #[serde(deserialize_with = "deserialize_and_validate_keyslots")]
     pub keyslots: HashMap<String, Luks2Keyslot>,
+    /// A map of token IDs to their settings.
     pub tokens: HashMap<String, Luks2Token>,
+    /// A map of segment IDs to their settings.
     pub segments: HashMap<String, Luks2Segment>,
+    /// A map of digest IDs to their settings.
     pub digests: HashMap<String, Luks2Digest>,
+    /// Global device configuration.
     pub config: Luks2Config,
 }
 
@@ -935,20 +1073,32 @@ impl PartialEq<&str> for LuksDeviceUuid {
     }
 }
 
+/// The primary binary header for LUKS2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Luks2Header {
+    /// The LUKS version (should be 2).
     pub version: u16,
+    /// The total size of the header, including the binary part and the JSON area.
     pub hdr_size: u64,
+    /// The sequence ID, incremented on each header update.
     pub seqid: u64,
+    /// An optional label for the device.
     pub label: String,
+    /// The hash algorithm used for calculating the header checksum.
     pub checksum_alg: Luks2HashAlg,
+    /// The salt used for the header.
     #[serde(with = "serde_arrays")]
     pub salt: [u8; LUKS2_SALT_SIZE],
+    /// The UUID of the device.
     pub uuid: LuksDeviceUuid,
+    /// An optional subsystem label for the device.
     pub subsystem: String,
+    /// The offset of this header in bytes from the start of the device.
     pub hdr_offset: u64,
+    /// The header checksum.
     #[serde(with = "serde_arrays")]
     pub checksum: [u8; LUKS2_CHECKSUM_SIZE],
+    /// The associated JSON metadata.
     pub metadata: Luks2Metadata,
 }
 
@@ -1061,9 +1211,12 @@ impl Luks2Header {
     }
 }
 
+/// A LUKS header, either version 1 or 2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LuksHeader {
-    V1, // Placeholder for LUKS1
+    /// A LUKS1 header. Currently only used as a placeholder.
+    V1,
+    /// A LUKS2 header.
     V2(Luks2Header),
 }
 
@@ -1084,6 +1237,9 @@ impl LuksHeader {
         }
     }
 
+    /// Opens a LUKS device from a reader.
+    ///
+    /// This reads the header and all keyslot data areas from the reader.
     #[cfg(feature = "_open")]
     pub fn open<R: Read + Seek>(mut reader: R) -> Result<LuksDevice, LuksError> {
         let header = Self::from_reader(&mut reader)?;
@@ -1115,6 +1271,9 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 impl LuksHeader {
+    /// Reads a LUKS header from a reader.
+    ///
+    /// This only reads the header metadata, not the keyslot data areas.
     pub fn from_reader<R: Read + Seek>(mut reader: R) -> Result<Self, LuksError> {
         let mut magic = [0u8; LUKS_MAGIC_SIZE];
         reader.read_exact(&mut magic)?;

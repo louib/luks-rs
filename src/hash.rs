@@ -16,15 +16,23 @@ pub const HASH_SHA256: &str = "sha256";
 /// SHA-512 hash algorithm identifier.
 pub const HASH_SHA512: &str = "sha512";
 
+/// Supported hash algorithms for LUKS2.
+///
+/// These algorithms are used for calculating digests, anti-forensic (AF) stripes,
+/// and the header checksum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Luks2HashAlg {
+    /// SHA-256 hash algorithm.
     Sha256,
+    /// SHA-512 hash algorithm.
     Sha512,
 }
 
 impl Luks2HashAlg {
     /// Returns the algorithm name as a byte array padded with null bytes.
+    ///
+    /// This is the format used in the LUKS2 binary header.
     pub fn to_bytes(&self) -> [u8; LUKS2_CHECKSUM_ALG_ID_LEN] {
         let mut res = [0u8; LUKS2_CHECKSUM_ALG_ID_LEN];
         let s = self.to_string();
