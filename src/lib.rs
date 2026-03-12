@@ -27,7 +27,7 @@ pub mod key;
 pub use hash::{
     HASH_SHA256, HASH_SHA512, LUKS2_CHECKSUM_ALG_ID_LEN, Luks2HashAlg, SHA256_DIGEST_SIZE, SHA512_DIGEST_SIZE,
 };
-pub use kdf::derive_key;
+pub use kdf::Luks2Kdf;
 pub use key::{UnlockKey, VolumeKey};
 
 /// A representation of a LUKS device, including its header and keyslots.
@@ -182,8 +182,7 @@ impl LuksDevice {
         };
 
         // 1. Derive the keyslot key from the passphrase
-        let keyslot_key = crate::kdf::derive_key(kdf, key, &h2.salt, key_size as usize)?;
-
+        let keyslot_key = kdf.derive_key(key, &h2.salt, key_size as usize)?;
         // 2. Get the encrypted data from the captured keyslots
         let encrypted_data = self
             .keyslots
@@ -369,8 +368,7 @@ impl LuksDevice {
         }
 
         // 2. Derive the new keyslot key
-        let keyslot_key = crate::kdf::derive_key(kdf, key, &h2.salt, key_size as usize)?;
-
+        let keyslot_key = kdf.derive_key(key, &h2.salt, key_size as usize)?;
         // 3. AF-split the volume key
         let mut random_stripes =
             vec![0u8; (volume_key.expose_bytes().len() as u32 * (af.stripes - 1)) as usize];
@@ -717,43 +715,6 @@ impl Luks2Area {
             Luks2Area::DatashiftChecksum { size, .. } => size.0,
         }
     }
-}
-
-/// Key derivation function (KDF) settings for a keyslot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum Luks2Kdf {
-    /// Argon2i KDF.
-    Argon2i {
-        /// The number of iterations (time).
-        time: u32,
-        /// The amount of memory in KiB.
-        memory: u32,
-        /// The number of parallel threads.
-        cpus: u32,
-        /// The base64-encoded salt.
-        salt: String,
-    },
-    /// Argon2id KDF.
-    Argon2id {
-        /// The number of iterations (time).
-        time: u32,
-        /// The amount of memory in KiB.
-        memory: u32,
-        /// The number of parallel threads.
-        cpus: u32,
-        /// The base64-encoded salt.
-        salt: String,
-    },
-    /// PBKDF2.
-    Pbkdf2 {
-        /// The hash algorithm used.
-        hash: Luks2HashAlg,
-        /// The number of iterations.
-        iterations: u32,
-        /// The base64-encoded salt.
-        salt: String,
-    },
 }
 
 /// The priority of a LUKS2 keyslot.
@@ -1491,7 +1452,7 @@ mod tests {
             salt: keyslot_salt_b64,
         };
 
-        let keyslot_key = crate::kdf::derive_key(&kdf, &unlock_key, &salt, volume_key_size).unwrap();
+        let keyslot_key = kdf.derive_key(&unlock_key, &salt, volume_key_size).unwrap();
 
         // AF split the volume key
         let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
@@ -1645,7 +1606,7 @@ mod tests {
             salt: keyslot_salt_b64,
         };
 
-        let keyslot_key = crate::kdf::derive_key(&kdf, &old_key, &salt, volume_key_size).unwrap();
+        let keyslot_key = kdf.derive_key(&old_key, &salt, volume_key_size).unwrap();
 
         // AF split the volume key
         let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];
@@ -1792,7 +1753,7 @@ mod tests {
             salt: keyslot_salt_b64,
         };
 
-        let keyslot_key = crate::kdf::derive_key(&kdf, &key, &salt, volume_key_size).unwrap();
+        let keyslot_key = kdf.derive_key(&key, &salt, volume_key_size).unwrap();
 
         // AF split the volume key
         let mut random_stripes = vec![0u8; volume_key_size * (LUKS1_AF_STRIPES - 1) as usize];

@@ -1,78 +1,123 @@
-use crate::{Luks2HashAlg, Luks2Kdf, LuksError, UnlockKey};
+use crate::{Luks2HashAlg, LuksError, UnlockKey};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose};
+use serde::{Deserialize, Serialize};
 
-/// Derives a key from an unlock key using the KDF specified in the LUKS2 header.
-pub fn derive_key(
-    kdf: &Luks2Kdf,
-    key: &UnlockKey,
-    _header_salt: &[u8],
-    key_size: usize,
-) -> Result<Vec<u8>, LuksError> {
-    let passphrase = key.expose_bytes();
-    match kdf {
-        Luks2Kdf::Argon2i {
-            time,
-            memory,
-            cpus,
-            salt,
-            ..
-        } => {
-            let salt_bytes = general_purpose::STANDARD
-                .decode(salt)
-                .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
+/// Key derivation function (KDF) settings for a keyslot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Luks2Kdf {
+    /// Argon2i KDF.
+    Argon2i {
+        /// The number of iterations (time).
+        time: u32,
+        /// The amount of memory in KiB.
+        memory: u32,
+        /// The number of parallel threads.
+        cpus: u32,
+        /// The base64-encoded salt.
+        salt: String,
+    },
+    /// Argon2id KDF.
+    Argon2id {
+        /// The number of iterations (time).
+        time: u32,
+        /// The amount of memory in KiB.
+        memory: u32,
+        /// The number of parallel threads.
+        cpus: u32,
+        /// The base64-encoded salt.
+        salt: String,
+    },
+    /// PBKDF2.
+    Pbkdf2 {
+        /// The hash algorithm used.
+        hash: Luks2HashAlg,
+        /// The number of iterations.
+        iterations: u32,
+        /// The base64-encoded salt.
+        salt: String,
+    },
+}
 
-            let mut output = vec![0u8; key_size];
-            let params = Params::new(*memory, *time, *cpus, None)
-                .map_err(|e| LuksError::Kdf(format!("Invalid Argon2 params: {}", e)))?;
+impl Luks2Kdf {
+    /// Derives a key from an unlock key using the KDF specified in the LUKS2 header.
+    pub fn derive_key(
+        &self,
+        key: &UnlockKey,
+        _header_salt: &[u8],
+        key_size: usize,
+    ) -> Result<Vec<u8>, LuksError> {
+        let passphrase = key.expose_bytes();
+        match self {
+            Luks2Kdf::Argon2i {
+                time,
+                memory,
+                cpus,
+                salt,
+                ..
+            } => {
+                let salt_bytes = general_purpose::STANDARD
+                    .decode(salt)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
 
-            let argon2 = Argon2::new(Algorithm::Argon2i, Version::V0x13, params);
-            argon2
-                .hash_password_into(passphrase, &salt_bytes, &mut output)
-                .map_err(|e| LuksError::Kdf(format!("Argon2 error: {}", e)))?;
+                let mut output = vec![0u8; key_size];
+                let params = Params::new(*memory, *time, *cpus, None)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid Argon2 params: {}", e)))?;
 
-            Ok(output)
-        }
-        Luks2Kdf::Argon2id {
-            time,
-            memory,
-            cpus,
-            salt,
-            ..
-        } => {
-            let salt_bytes = general_purpose::STANDARD
-                .decode(salt)
-                .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
+                let argon2 = Argon2::new(Algorithm::Argon2i, Version::V0x13, params);
+                argon2
+                    .hash_password_into(passphrase, &salt_bytes, &mut output)
+                    .map_err(|e| LuksError::Kdf(format!("Argon2 error: {}", e)))?;
 
-            let mut output = vec![0u8; key_size];
-            let params = Params::new(*memory, *time, *cpus, None)
-                .map_err(|e| LuksError::Kdf(format!("Invalid Argon2 params: {}", e)))?;
-
-            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-            argon2
-                .hash_password_into(passphrase, &salt_bytes, &mut output)
-                .map_err(|e| LuksError::Kdf(format!("Argon2 error: {}", e)))?;
-
-            Ok(output)
-        }
-        Luks2Kdf::Pbkdf2 {
-            hash,
-            iterations,
-            salt,
-            ..
-        } => {
-            let salt_bytes = general_purpose::STANDARD
-                .decode(salt)
-                .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
-
-            let mut output = vec![0u8; key_size];
-
-            if hash == &Luks2HashAlg::Sha256 {
-                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(passphrase, &salt_bytes, *iterations, &mut output)
-                    .map_err(|e| LuksError::Kdf(format!("PBKDF2 error: {}", e)))?;
                 Ok(output)
-            } else {
-                Err(LuksError::UnsupportedChecksumAlg(hash.to_string()))
+            }
+            Luks2Kdf::Argon2id {
+                time,
+                memory,
+                cpus,
+                salt,
+                ..
+            } => {
+                let salt_bytes = general_purpose::STANDARD
+                    .decode(salt)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
+
+                let mut output = vec![0u8; key_size];
+                let params = Params::new(*memory, *time, *cpus, None)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid Argon2 params: {}", e)))?;
+
+                let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+                argon2
+                    .hash_password_into(passphrase, &salt_bytes, &mut output)
+                    .map_err(|e| LuksError::Kdf(format!("Argon2 error: {}", e)))?;
+
+                Ok(output)
+            }
+            Luks2Kdf::Pbkdf2 {
+                hash,
+                iterations,
+                salt,
+                ..
+            } => {
+                let salt_bytes = general_purpose::STANDARD
+                    .decode(salt)
+                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
+
+                let mut output = vec![0u8; key_size];
+
+                if hash == &Luks2HashAlg::Sha256 {
+                    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(
+                        passphrase,
+                        &salt_bytes,
+                        *iterations,
+                        &mut output,
+                    )
+                    .map_err(|e| LuksError::Kdf(format!("PBKDF2 error: {}", e)))?;
+                    Ok(output)
+                } else {
+                    Err(LuksError::UnsupportedChecksumAlg(hash.to_string()))
+                }
             }
         }
     }
