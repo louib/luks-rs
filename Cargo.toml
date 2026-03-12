@@ -19,6 +19,7 @@ include = [
 [features]
 _open = []
 interactive = ["rpassword"]
+challenge_response = ["dep:challenge_response"]
 
 [[bin]]
 name = "create_fixture"
@@ -47,5 +48,8 @@ xts-mode = "0.5"
 secrecy = "0.10"
 rpassword = { version = "7", optional = true }
 rand = "0.9"
+challenge_response = { version = "0.5", optional = true }
+hkdf = "0.12"
+sha1 = "0.10"
 
 [dev-dependencies]

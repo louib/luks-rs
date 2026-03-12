@@ -21,10 +21,12 @@ cargo run --example read_header -- /dev/sda1
 
 - **Pure-Rust**: The library is implemented entirely in Rust, which allows for easy static compilation, for example, using the `musl` target. This simplifies deployment and integration in various environments.
 - **Custom Token Types**: The library introduces its own specialized token type, `luks-rs-keyring`. While it currently shares the same structure as the standard `luks2-keyring`, this unique identifier allows the library to recognize and handle tokens specifically created for its use.
+- **Challenge-Response Authentication**: Supports hardware-backed (e.g., YubiKey) and software-based HMAC-SHA1 authentication. It implements standardized **HKDF-SHA256** key combination, using the keyslot salt as a unique challenge for cryptographic domain separation and anti-replay. Includes a software-based recovery path and a mock implementation for comprehensive unit testing.
 
 ## References
 
 - [LUKS2 On-Disk Format Specification](https://gitlab.com/cryptsetup/LUKS2-docs/blob/main/luks2_doc_wip.pdf)
 - [LUKS1 On-Disk Format Specification](https://cdn.kernel.org/pub/linux/utils/cryptsetup/LUKS_docs/on-disk-format.pdf)
+- [RFC 5869: HMAC-based Extract-and-Expand Key Derivation Function (HKDF)](https://datatracker.ietf.org/doc/html/rfc5869)
 - [New Methods in Hard Disk Encryption](https://clemens.endorphin.org/nmihde/nmihde-A4-ds.pdf)
 - [TKS1 - An anti-forensic, two level, and iterated key setup scheme](https://www.kernel.org/pub/linux/utils/cryptsetup/LUKS_docs/TKS1-draft.pdf)
