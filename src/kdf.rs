@@ -1,14 +1,15 @@
-use crate::{Luks2HashAlg, Luks2Kdf, LuksError};
+use crate::{Luks2HashAlg, Luks2Kdf, LuksError, UnlockKey};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose};
 
-/// Derives a key from a passphrase using the KDF specified in the LUKS2 header.
+/// Derives a key from an unlock key using the KDF specified in the LUKS2 header.
 pub fn derive_key(
     kdf: &Luks2Kdf,
-    passphrase: &[u8],
+    key: &UnlockKey,
     _header_salt: &[u8],
     key_size: usize,
 ) -> Result<Vec<u8>, LuksError> {
+    let passphrase = key.expose_bytes();
     match kdf {
         Luks2Kdf::Argon2i {
             time,
