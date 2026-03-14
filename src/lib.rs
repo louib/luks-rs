@@ -2315,4 +2315,23 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    #[cfg(feature = "_open")]
+    fn test_is_luks_device() {
+        let path = std::env::temp_dir().join("test_luks_magic");
+        std::fs::write(&path, &LUKS_MAGIC).unwrap();
+        assert!(is_luks_device(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+
+        let path = std::env::temp_dir().join("test_not_luks_magic");
+        std::fs::write(&path, b"NOTLUK").unwrap();
+        assert!(!is_luks_device(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+
+        let path = std::env::temp_dir().join("test_short_luks_magic");
+        std::fs::write(&path, b"LUKS").unwrap();
+        assert!(!is_luks_device(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+    }
 }
