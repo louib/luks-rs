@@ -424,6 +424,20 @@ impl LuksDevice {
     }
 }
 
+/// Returns true if the device at the given path is a LUKS device.
+///
+/// This only checks the magic signature at the beginning of the device.
+#[cfg(feature = "_open")]
+pub fn is_luks_device<P: AsRef<Path>>(path: P) -> Result<bool, LuksError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = [0u8; LUKS_MAGIC_SIZE];
+    match file.read_exact(&mut buffer) {
+        Ok(_) => Ok(buffer == LUKS_MAGIC),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(LuksError::Io(e)),
+    }
+}
+
 /// The magic signature for LUKS devices: "LUKS\xBA\xBE".
 pub const LUKS_MAGIC: [u8; 6] = *b"LUKS\xBA\xBE";
 
