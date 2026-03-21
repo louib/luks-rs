@@ -1,3 +1,4 @@
+use luks::KeySlotId;
 use std::env;
 use std::fs::File;
 use std::process;
@@ -24,12 +25,14 @@ fn main() {
     };
 
     let passphrase = rpassword::prompt_password("Enter passphrase: ").unwrap();
-    println!("passphrase is \"{}\"", passphrase);
     let key = luks::UnlockKey::from(passphrase);
 
     if args.len() > 2 {
-        let keyslot_id = &args[2];
-        match device.unlock(keyslot_id, &key) {
+        let keyslot_id = args[2].parse::<KeySlotId>().unwrap_or_else(|e| {
+            eprintln!("Invalid keyslot ID: {}", e);
+            process::exit(1);
+        });
+        match device.unlock(&keyslot_id, &key) {
             Ok(_) => println!("Passphrase verified successfully for keyslot {}!", keyslot_id),
             Err(e) => {
                 eprintln!("Error verifying passphrase: {}", e);

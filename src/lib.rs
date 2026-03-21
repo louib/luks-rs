@@ -23,12 +23,14 @@ pub mod af;
 pub mod hash;
 pub mod kdf;
 pub mod key;
+pub mod keyslot;
 
 pub use hash::{
     HASH_SHA256, HASH_SHA512, LUKS2_CHECKSUM_ALG_ID_LEN, Luks2HashAlg, SHA256_DIGEST_SIZE, SHA512_DIGEST_SIZE,
 };
 pub use kdf::Luks2Kdf;
 pub use key::{UnlockKey, VolumeKey};
+pub use keyslot::KeySlotId;
 
 /// A representation of a LUKS device, including its header and keyslots.
 ///
@@ -39,7 +41,7 @@ pub struct LuksDevice {
     /// The LUKS header (either version 1 or 2).
     pub header: LuksHeader,
     /// A map of keyslot IDs to their raw, encrypted data area.
-    pub keyslots: HashMap<String, Vec<u8>>,
+    pub keyslots: HashMap<KeySlotId, Vec<u8>>,
     /// The volume key, if the device has been successfully unlocked.
     #[serde(skip)]
     pub unlocked_key: Option<VolumeKey>,
@@ -48,7 +50,7 @@ pub struct LuksDevice {
 #[cfg(feature = "_open")]
 impl LuksDevice {
     /// Unlocks the device with a passphrase, storing the volume key in the device.
-    pub fn unlock(&mut self, keyslot_id: &str, key: &UnlockKey) -> Result<(), LuksError> {
+    pub fn unlock(&mut self, keyslot_id: &KeySlotId, key: &UnlockKey) -> Result<(), LuksError> {
         let volume_key = self.get_volume_key(keyslot_id, key)?;
         self.unlocked_key = Some(volume_key);
 
@@ -86,7 +88,7 @@ impl LuksDevice {
     /// # Errors
     ///
     /// Returns `LuksError::Locked` if the device has not been unlocked.
-    pub fn verify(&self, keyslot_id: &str) -> Result<bool, LuksError> {
+    pub fn verify(&self, keyslot_id: &KeySlotId) -> Result<bool, LuksError> {
         let volume_key = self.unlocked_key.as_ref().ok_or(LuksError::Locked)?;
 
         let h2 = match &self.header {
@@ -100,7 +102,7 @@ impl LuksDevice {
             .digests
             .iter()
             .find(|(_, d)| match d {
-                Luks2Digest::Pbkdf2 { keyslots, .. } => keyslots.contains(&keyslot_id.to_string()),
+                Luks2Digest::Pbkdf2 { keyslots, .. } => keyslots.contains(keyslot_id),
             })
             .ok_or_else(|| LuksError::InvalidHeader(format!("No digest found for keyslot {}", keyslot_id)))?;
 
@@ -148,7 +150,7 @@ impl LuksDevice {
     }
 
     /// Derives the volume key using a passphrase and a specific keyslot.
-    pub fn get_volume_key(&self, keyslot_id: &str, key: &UnlockKey) -> Result<VolumeKey, LuksError> {
+    pub fn get_volume_key(&self, keyslot_id: &KeySlotId, key: &UnlockKey) -> Result<VolumeKey, LuksError> {
         let h2 = match &self.header {
             LuksHeader::V1 => return Err(LuksError::UnsupportedVersion(1)),
             LuksHeader::V2(h) => h,
@@ -309,7 +311,7 @@ impl LuksDevice {
     /// This only updates the metadata in memory. You must call [`to_writer`] to persist the changes.
     pub fn change_passphrase(
         &mut self,
-        keyslot_id: &str,
+        keyslot_id: &KeySlotId,
         old_key: &UnlockKey,
         new_key: &UnlockKey,
     ) -> Result<(), LuksError> {
@@ -319,7 +321,7 @@ impl LuksDevice {
 
     fn update_keyslot(
         &mut self,
-        keyslot_id: &str,
+        keyslot_id: &KeySlotId,
         key: &UnlockKey,
         volume_key: &VolumeKey,
     ) -> Result<(), LuksError> {
@@ -418,7 +420,7 @@ impl LuksDevice {
         }
 
         // 5. Update self.keyslots
-        self.keyslots.insert(keyslot_id.to_string(), encrypted_data);
+        self.keyslots.insert(keyslot_id.clone(), encrypted_data);
 
         Ok(())
     }
@@ -869,7 +871,7 @@ pub enum Luks2Token {
     #[serde(rename = "luks2-keyring")]
     Keyring {
         /// The IDs of the keyslots associated with this token.
-        keyslots: Vec<String>,
+        keyslots: Vec<KeySlotId>,
         /// The description of the key in the keyring.
         key_description: String,
     },
@@ -877,7 +879,7 @@ pub enum Luks2Token {
     #[serde(rename = "luks-rs-keyring")]
     LuksRsKeyring {
         /// The IDs of the keyslots associated with this token.
-        keyslots: Vec<String>,
+        keyslots: Vec<KeySlotId>,
         /// The description of the key in the keyring.
         key_description: String,
     },
@@ -946,7 +948,7 @@ pub enum Luks2Digest {
     /// A PBKDF2-based digest.
     Pbkdf2 {
         /// The IDs of the keyslots associated with this digest.
-        keyslots: Vec<String>,
+        keyslots: Vec<KeySlotId>,
         /// The IDs of the segments associated with this digest.
         segments: Vec<String>,
         /// The hash algorithm used.
@@ -971,11 +973,13 @@ pub struct Luks2Config {
     pub flags: Option<Vec<String>>,
 }
 
-fn deserialize_and_validate_keyslots<'de, D>(deserializer: D) -> Result<HashMap<String, Luks2Keyslot>, D::Error>
+fn deserialize_and_validate_keyslots<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<KeySlotId, Luks2Keyslot>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let keyslots: HashMap<String, Luks2Keyslot> = HashMap::deserialize(deserializer)?;
+    let keyslots: HashMap<KeySlotId, Luks2Keyslot> = HashMap::deserialize(deserializer)?;
     for (id, slot) in &keyslots {
         slot.validate()
             .map_err(|e| serde::de::Error::custom(format!("Validation failed for keyslot {}: {}", id, e)))?;
@@ -988,7 +992,7 @@ where
 pub struct Luks2Metadata {
     /// A map of keyslot IDs to their settings.
     #[serde(deserialize_with = "deserialize_and_validate_keyslots")]
-    pub keyslots: HashMap<String, Luks2Keyslot>,
+    pub keyslots: HashMap<KeySlotId, Luks2Keyslot>,
     /// A map of token IDs to their settings.
     pub tokens: HashMap<String, Luks2Token>,
     /// A map of segment IDs to their settings.
@@ -1516,7 +1520,7 @@ mod tests {
         let expected_digest_b64 = base64::engine::general_purpose::STANDARD.encode(expected_digest);
 
         let digest = Luks2Digest::Pbkdf2 {
-            keyslots: vec!["0".to_string()],
+            keyslots: vec![KeySlotId::new("0")],
             segments: vec!["0".to_string()],
             hash: Luks2HashAlg::Sha256,
             iterations: 1000,
@@ -1533,7 +1537,7 @@ mod tests {
         };
 
         let mut keyslots = HashMap::new();
-        keyslots.insert("0".to_string(), keyslot);
+        keyslots.insert(KeySlotId::new("0"), keyslot);
 
         let mut digests = HashMap::new();
         digests.insert("0".to_string(), digest);
@@ -1566,7 +1570,7 @@ mod tests {
         };
 
         let mut captured_keyslots = HashMap::new();
-        captured_keyslots.insert("0".to_string(), encrypted_data);
+        captured_keyslots.insert(KeySlotId::new("0"), encrypted_data);
 
         let device = LuksDevice {
             header: LuksHeader::V2(header),
@@ -1583,8 +1587,10 @@ mod tests {
         let mut read_device = LuksHeader::open(&mut buf).expect("open failed");
 
         let key = UnlockKey::from(passphrase);
-        read_device.unlock("0", &key).expect("unlock failed");
-        assert!(read_device.verify("0").expect("verify failed"));
+        read_device
+            .unlock(&KeySlotId::new("0"), &key)
+            .expect("unlock failed");
+        assert!(read_device.verify(&KeySlotId::new("0")).expect("verify failed"));
     }
 
     #[test]
@@ -1670,8 +1676,9 @@ mod tests {
             .unwrap();
         let expected_digest_b64 = base64::engine::general_purpose::STANDARD.encode(expected_digest);
 
+        let ks0 = KeySlotId::new("0");
         let digest = Luks2Digest::Pbkdf2 {
-            keyslots: vec!["0".to_string()],
+            keyslots: vec![ks0.clone()],
             segments: vec!["0".to_string()],
             hash: Luks2HashAlg::Sha256,
             iterations: TEST_ITERATIONS,
@@ -1680,7 +1687,7 @@ mod tests {
         };
 
         let mut keyslots = HashMap::new();
-        keyslots.insert("0".to_string(), keyslot);
+        keyslots.insert(ks0.clone(), keyslot);
 
         let mut digests = HashMap::new();
         digests.insert("0".to_string(), digest);
@@ -1710,7 +1717,7 @@ mod tests {
         };
 
         let mut captured_keyslots = HashMap::new();
-        captured_keyslots.insert("0".to_string(), encrypted_data);
+        captured_keyslots.insert(ks0.clone(), encrypted_data);
 
         let mut device = LuksDevice {
             header: LuksHeader::V2(header),
@@ -1720,20 +1727,20 @@ mod tests {
 
         // 2. Change passphrase
         device
-            .change_passphrase("0", &old_key, &new_key)
+            .change_passphrase(&ks0, &old_key, &new_key)
             .expect("change_passphrase failed");
 
         // 3. Verify
-        device.unlock("0", &new_key).expect("unlock failed");
-        assert!(device.verify("0").expect("verify with new passphrase failed"));
+        device.unlock(&ks0, &new_key).expect("unlock failed");
+        assert!(device.verify(&ks0).expect("verify with new passphrase failed"));
 
         device
-            .unlock("0", &old_key)
+            .unlock(&ks0, &old_key)
             .expect_err("unlock with old passphrase should fail");
 
         // 4. Verify volume key is still the same
         let derived_volume_key = device
-            .get_volume_key("0", &new_key)
+            .get_volume_key(&ks0, &new_key)
             .expect("get_volume_key failed");
         assert_eq!(volume_key, derived_volume_key.expose_bytes());
     }
@@ -1816,8 +1823,9 @@ mod tests {
         pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(&volume_key, &digest_salt, 1000, &mut expected_digest).unwrap();
         let expected_digest_b64 = base64::engine::general_purpose::STANDARD.encode(expected_digest);
 
+        let ks0 = KeySlotId::new("0");
         let digest = Luks2Digest::Pbkdf2 {
-            keyslots: vec!["0".to_string()],
+            keyslots: vec![ks0.clone()],
             segments: vec!["0".to_string()],
             hash: Luks2HashAlg::Sha256,
             iterations: 1000,
@@ -1826,7 +1834,7 @@ mod tests {
         };
 
         let mut keyslots = HashMap::new();
-        keyslots.insert("0".to_string(), keyslot);
+        keyslots.insert(ks0.clone(), keyslot);
 
         let mut digests = HashMap::new();
         digests.insert("0".to_string(), digest);
@@ -1856,7 +1864,7 @@ mod tests {
         };
 
         let mut captured_keyslots = HashMap::new();
-        captured_keyslots.insert("0".to_string(), encrypted_data);
+        captured_keyslots.insert(ks0.clone(), encrypted_data);
 
         let mut device = LuksDevice {
             header: LuksHeader::V2(header),
@@ -1865,7 +1873,7 @@ mod tests {
         };
 
         // 2. Unlock
-        device.unlock("0", &key).expect("unlock failed");
+        device.unlock(&ks0, &key).expect("unlock failed");
 
         // 3. Verify
         assert!(device.unlocked_key.is_some());
@@ -2106,14 +2114,14 @@ mod tests {
         assert_eq!(metadata.digests.len(), 1);
         assert_eq!(metadata.config.json_size, Luks2U64(12288));
 
-        let ks0 = metadata.keyslots.get("0").unwrap();
+        let ks0 = metadata.keyslots.get(&KeySlotId::new("0")).unwrap();
         let Luks2Keyslot::Luks2 { key_size, kdf, .. } = ks0 else {
             panic!("Expected Luks2 keyslot")
         };
         assert_eq!(*key_size, Luks2KeySize::Size32);
         assert!(matches!(kdf, Luks2Kdf::Argon2i { .. }));
 
-        let ks1 = metadata.keyslots.get("1").unwrap();
+        let ks1 = metadata.keyslots.get(&KeySlotId::new("1")).unwrap();
         let Luks2Keyslot::Luks2 { kdf, .. } = ks1 else {
             panic!("Expected Luks2 keyslot")
         };
@@ -2152,7 +2160,7 @@ mod tests {
             key_description,
         } = token
         {
-            assert_eq!(keyslots, &vec!["0".to_string()]);
+            assert_eq!(keyslots, &vec![KeySlotId::new("0")]);
             assert_eq!(key_description, "MyLuksRsKey");
         } else {
             panic!("Expected LuksRsKeyring token");
@@ -2207,7 +2215,7 @@ mod tests {
             "config": { "json_size": "12288", "keyslots_size": "4161536" }
         }"#;
         let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
-        let slot = metadata.keyslots.get("0").unwrap();
+        let slot = metadata.keyslots.get(&KeySlotId::new("0")).unwrap();
         let Luks2Keyslot::Reencrypt {
             mode,
             direction,
@@ -2261,21 +2269,24 @@ mod tests {
         }"#;
         let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
 
-        let checksum_slot = metadata.keyslots.get("checksum_slot").unwrap();
+        let checksum_slot = metadata.keyslots.get(&KeySlotId::new("checksum_slot")).unwrap();
         if let Luks2Keyslot::Reencrypt { area, .. } = checksum_slot {
             assert!(matches!(area, Luks2Area::Checksum { .. }));
         } else {
             panic!("Expected Reencrypt keyslot")
         }
 
-        let datashift_slot = metadata.keyslots.get("datashift_slot").unwrap();
+        let datashift_slot = metadata.keyslots.get(&KeySlotId::new("datashift_slot")).unwrap();
         if let Luks2Keyslot::Reencrypt { area, .. } = datashift_slot {
             assert!(matches!(area, Luks2Area::Datashift { .. }));
         } else {
             panic!("Expected Reencrypt keyslot")
         }
 
-        let datashift_checksum_slot = metadata.keyslots.get("datashift_checksum_slot").unwrap();
+        let datashift_checksum_slot = metadata
+            .keyslots
+            .get(&KeySlotId::new("datashift_checksum_slot"))
+            .unwrap();
         if let Luks2Keyslot::Reencrypt { area, .. } = datashift_checksum_slot {
             assert!(matches!(area, Luks2Area::DatashiftChecksum { .. }));
         } else {
@@ -2301,7 +2312,7 @@ mod tests {
                     "config": { "json_size": "12288", "keyslots_size": "4161536" }
                 }"#;
         let metadata: Luks2Metadata = serde_json::from_str(json_data).unwrap();
-        let slot = metadata.keyslots.get("0").unwrap();
+        let slot = metadata.keyslots.get(&KeySlotId::new("0")).unwrap();
         let Luks2Keyslot::Luks2 { kdf, .. } = slot else {
             panic!("Expected Luks2 keyslot")
         };

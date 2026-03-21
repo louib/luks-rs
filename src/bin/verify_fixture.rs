@@ -1,4 +1,4 @@
-use luks::{LuksDevice, UnlockKey};
+use luks::{KeySlotId, LuksDevice, UnlockKey};
 use std::env;
 use std::io;
 use std::process;
@@ -34,8 +34,11 @@ fn main() {
     let key = UnlockKey::from(passphrase);
 
     if args.len() > 2 {
-        let keyslot_id = &args[2];
-        match device.unlock(keyslot_id, &key) {
+        let keyslot_id = args[2].parse::<KeySlotId>().unwrap_or_else(|e| {
+            eprintln!("Invalid keyslot ID: {}", e);
+            process::exit(1);
+        });
+        match device.unlock(&keyslot_id, &key) {
             Ok(_) => println!("Passphrase verified successfully for keyslot {}!", keyslot_id),
             Err(e) => {
                 eprintln!("Error verifying passphrase: {}", e);
