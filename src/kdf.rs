@@ -48,67 +48,53 @@ impl Luks2Kdf {
         _header_salt: &[u8],
         key_size: usize,
     ) -> Result<Vec<u8>, LuksError> {
-        let passphrase = key.expose_bytes();
+        let salt = match self {
+            Luks2Kdf::Argon2i { salt, .. } => salt,
+            Luks2Kdf::Argon2id { salt, .. } => salt,
+            Luks2Kdf::Pbkdf2 { salt, .. } => salt,
+        };
+
+        let salt_bytes = general_purpose::STANDARD
+            .decode(salt)
+            .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
+
+        let effective_key = key.calculate_effective_key(&salt_bytes)?;
+
         match self {
             Luks2Kdf::Argon2i {
-                time,
-                memory,
-                cpus,
-                salt,
-                ..
+                time, memory, cpus, ..
             } => {
-                let salt_bytes = general_purpose::STANDARD
-                    .decode(salt)
-                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
-
                 let mut output = vec![0u8; key_size];
                 let params = Params::new(*memory, *time, *cpus, None)
                     .map_err(|e| LuksError::Kdf(format!("Invalid Argon2 params: {}", e)))?;
 
                 let argon2 = Argon2::new(Algorithm::Argon2i, Version::V0x13, params);
                 argon2
-                    .hash_password_into(passphrase, &salt_bytes, &mut output)
+                    .hash_password_into(&effective_key, &salt_bytes, &mut output)
                     .map_err(|e| LuksError::Kdf(format!("Argon2 error: {}", e)))?;
 
                 Ok(output)
             }
             Luks2Kdf::Argon2id {
-                time,
-                memory,
-                cpus,
-                salt,
-                ..
+                time, memory, cpus, ..
             } => {
-                let salt_bytes = general_purpose::STANDARD
-                    .decode(salt)
-                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
-
                 let mut output = vec![0u8; key_size];
                 let params = Params::new(*memory, *time, *cpus, None)
                     .map_err(|e| LuksError::Kdf(format!("Invalid Argon2 params: {}", e)))?;
 
                 let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
                 argon2
-                    .hash_password_into(passphrase, &salt_bytes, &mut output)
+                    .hash_password_into(&effective_key, &salt_bytes, &mut output)
                     .map_err(|e| LuksError::Kdf(format!("Argon2 error: {}", e)))?;
 
                 Ok(output)
             }
-            Luks2Kdf::Pbkdf2 {
-                hash,
-                iterations,
-                salt,
-                ..
-            } => {
-                let salt_bytes = general_purpose::STANDARD
-                    .decode(salt)
-                    .map_err(|e| LuksError::Kdf(format!("Invalid salt base64: {}", e)))?;
-
+            Luks2Kdf::Pbkdf2 { hash, iterations, .. } => {
                 let mut output = vec![0u8; key_size];
 
                 if hash == &Luks2HashAlg::Sha256 {
                     pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(
-                        passphrase,
+                        &effective_key,
                         &salt_bytes,
                         *iterations,
                         &mut output,

@@ -22,6 +22,13 @@ impl UnlockKey {
     pub fn expose_bytes(&self) -> &[u8] {
         self.password.expose_secret().as_slice()
     }
+
+    /// Calculates the effective key material, potentially performing a challenge-response.
+    ///
+    /// Currently, it returns the raw password bytes, as challenge-response is not yet implemented.
+    pub fn calculate_effective_key(&self, _challenge: &[u8]) -> Result<Vec<u8>, crate::LuksError> {
+        Ok(self.password.expose_secret().to_vec())
+    }
 }
 
 impl From<String> for UnlockKey {
