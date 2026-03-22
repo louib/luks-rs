@@ -1,5 +1,42 @@
-use crate::{Luks2HashAlg, LuksError, SHA256_DIGEST_SIZE};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
+
+use crate::LuksError;
+use crate::hash::{Luks2HashAlg, SHA256_DIGEST_SIZE};
+
+/// The number of anti-forensic stripes used by the LUKS1 AF feature.
+///
+/// For historical reasons, this value is always 4000.
+pub const LUKS1_AF_STRIPES: u32 = 4000;
+
+/// The type of anti-forensic (AF) algorithm used in LUKS2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Luks2AfType {
+    /// The original LUKS1 AF algorithm.
+    Luks1,
+}
+
+impl fmt::Display for Luks2AfType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Luks2AfType::Luks1 => write!(f, "luks1"),
+        }
+    }
+}
+
+/// Anti-forensic (AF) settings for a keyslot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Luks2Af {
+    /// The type of AF algorithm.
+    #[serde(rename = "type")]
+    pub af_type: Luks2AfType,
+    /// The number of AF stripes.
+    pub stripes: u32,
+    /// The hash algorithm used for AF.
+    pub hash: Luks2HashAlg,
+}
 
 /// Merges anti-forensic stripes to retrieve the original data.
 pub fn merge(
