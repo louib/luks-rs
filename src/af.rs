@@ -162,7 +162,9 @@ fn hash_buf(hash_alg: &Luks2HashAlg, src: &[u8], iv: u32) -> Result<Vec<u8>, Luk
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "_write")]
     use super::*;
+    #[cfg(feature = "_write")]
     use rand::Rng;
 
     #[test]

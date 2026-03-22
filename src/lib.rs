@@ -1,4 +1,6 @@
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+#[cfg(feature = "_write")]
+use byteorder::WriteBytesExt;
+use byteorder::{BigEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -7,16 +9,15 @@ use std::io::{Read, Seek, Write};
 use std::str::FromStr;
 use thiserror::Error;
 
-use {
-    aes::cipher::KeyInit,
-    base64::Engine as _,
-    rand::Rng,
-    sha2::Sha512,
-    std::io::SeekFrom,
-    std::path::Path,
-    std::process::{Command, Stdio},
-    xts_mode::{Xts128, get_tweak_default},
-};
+use aes::cipher::KeyInit;
+use base64::Engine as _;
+#[cfg(feature = "_write")]
+use rand::Rng;
+use sha2::Sha512;
+use std::io::SeekFrom;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use xts_mode::{Xts128, get_tweak_default};
 
 pub mod af;
 pub mod hash;
@@ -1045,10 +1046,15 @@ impl LuksHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byteorder::{BigEndian, WriteBytesExt};
+    #[cfg(feature = "_write")]
+    use byteorder::BigEndian;
+    #[cfg(feature = "_write")]
+    use byteorder::WriteBytesExt;
+    #[cfg(feature = "_write")]
     use std::io::{Cursor, Write};
 
     #[test]
+    #[cfg(feature = "_write")]
     fn test_detect_luks2_with_checksum() {
         let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
         let json_data = format!(
@@ -1606,6 +1612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "_write")]
     fn test_num_keyslots() {
         let mut binary_header = vec![0u8; LUKS2_BINARY_HEADER_SIZE];
         let json_data = format!(
