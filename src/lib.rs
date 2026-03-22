@@ -9,6 +9,12 @@ use std::io::{Read, Seek, Write};
 use std::str::FromStr;
 use thiserror::Error;
 
+#[cfg(feature = "_challenge_response")]
+pub mod challenge_response;
+
+#[cfg(feature = "_challenge_response")]
+use crate::challenge_response::ChallengeResponseSlot;
+
 use aes::cipher::KeyInit;
 use base64::Engine as _;
 #[cfg(feature = "_write")]
@@ -51,6 +57,30 @@ pub struct LuksDevice {
 }
 
 impl LuksDevice {
+    /// Returns a list of keyslot IDs that are associated with a challenge-response token.
+    #[cfg(feature = "_challenge_response")]
+    pub fn get_challenge_response_keyslots(&self) -> Vec<(KeySlotId, Option<u32>, ChallengeResponseSlot)> {
+        let mut results = Vec::new();
+        match &self.header {
+            LuksHeader::V1 => {}
+            LuksHeader::V2(h) => {
+                for token in h.metadata.tokens.values() {
+                    if let Luks2Token::ChallengeResponse {
+                        keyslots,
+                        serial,
+                        slot,
+                    } = token
+                    {
+                        for id in keyslots {
+                            results.push((id.clone(), *serial, slot.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+
     /// Unlocks the device with a passphrase, storing the volume key in the device.
     pub fn unlock(&mut self, keyslot_id: &KeySlotId, key: &UnlockKey) -> Result<(), LuksError> {
         let volume_key = self.get_volume_key(keyslot_id, key)?;
@@ -427,6 +457,90 @@ impl LuksDevice {
         // 5. Update self.keyslots
         self.keyslots.insert(keyslot_id.clone(), encrypted_data);
 
+        // Add/remove tokens if necessary
+        #[cfg(feature = "_challenge_response")]
+        {
+            if let Some(cr) = key.challenge_response() {
+                // Check if a token already exists for this keyslot
+                let h2 = match &mut self.header {
+                    LuksHeader::V2(h) => h,
+                    _ => unreachable!(),
+                };
+
+                let mut found = false;
+                for token in h2.metadata.tokens.values_mut() {
+                    if let Luks2Token::ChallengeResponse {
+                        keyslots,
+                        serial: _,
+                        slot: _,
+                    } = token
+                    {
+                        if keyslots.contains(keyslot_id) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !found {
+                    // Create a new token
+                    let mut next_id = 0;
+                    while h2.metadata.tokens.contains_key(&next_id.to_string()) {
+                        next_id += 1;
+                    }
+
+                    match cr {
+                        crate::key::ChallengeResponseKey::Hardware { serial, slot } => {
+                            h2.metadata.tokens.insert(
+                                next_id.to_string(),
+                                Luks2Token::ChallengeResponse {
+                                    keyslots: vec![keyslot_id.clone()],
+                                    serial: *serial,
+                                    slot: slot.clone(),
+                                },
+                            );
+                        }
+                        crate::key::ChallengeResponseKey::Software { .. } => {
+                            h2.metadata.tokens.insert(
+                                next_id.to_string(),
+                                Luks2Token::ChallengeResponse {
+                                    keyslots: vec![keyslot_id.clone()],
+                                    serial: None,
+                                    slot: ChallengeResponseSlot::Slot1, // Default slot for software
+                                },
+                            );
+                        }
+                    }
+                }
+            } else {
+                // Remove token if it exists and only points to this keyslot
+                let h2 = match &mut self.header {
+                    LuksHeader::V2(h) => h,
+                    _ => unreachable!(),
+                };
+
+                let mut token_to_remove = None;
+                for (id, token) in &mut h2.metadata.tokens {
+                    if let Luks2Token::ChallengeResponse {
+                        keyslots,
+                        serial: _,
+                        slot: _,
+                    } = token
+                    {
+                        if keyslots.contains(keyslot_id) {
+                            keyslots.retain(|k| k != keyslot_id);
+                            if keyslots.is_empty() {
+                                token_to_remove = Some(id.clone());
+                            }
+                        }
+                    }
+                }
+                if let Some(id) = token_to_remove {
+                    h2.metadata.tokens.remove(&id);
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -522,6 +636,10 @@ pub enum LuksError {
     /// The operation requires an unlocked device, but it is currently locked.
     #[error("Device is locked")]
     Locked,
+    #[cfg(feature = "_challenge_response")]
+    /// An error occurred during challenge-response authentication.
+    #[error("Challenge-response error: {0}")]
+    ChallengeResponse(String),
 }
 
 /// A 64-bit unsigned integer that is represented as a decimal string in JSON.
@@ -571,6 +689,17 @@ pub enum Luks2Token {
         keyslots: Vec<KeySlotId>,
         /// The description of the key in the keyring.
         key_description: String,
+    },
+    #[cfg(feature = "_challenge_response")]
+    /// A challenge-response token.
+    #[serde(rename = "luks2-challenge-response")]
+    ChallengeResponse {
+        /// The IDs of the keyslots associated with this token.
+        keyslots: Vec<KeySlotId>,
+        /// The serial number of the challenge-response device.
+        serial: Option<u32>,
+        /// The slot on the device to use.
+        slot: ChallengeResponseSlot,
     },
 }
 
@@ -2024,5 +2153,151 @@ mod tests {
         std::fs::write(&path, b"LUKS").unwrap();
         assert!(!is_luks_device(&path).unwrap());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "_challenge_response")]
+    fn test_challenge_response_e2e() {
+        use crate::hash::SHA256_DIGEST_SIZE;
+        use std::collections::HashMap;
+
+        const TEST_KEY_SIZE: usize = 64;
+        const TEST_AREA_SIZE: usize = 131072;
+        const TEST_ITERATIONS: u32 = 1000;
+        const TEST_VOL_KEY_SIZE: usize = 64;
+        const TEST_CR_SECRET: &[u8] = &[0x01, 0x02, 0x03, 0x04];
+
+        // 1. Setup a mock LuksDevice with a password-only keyslot
+        let json_metadata = format!(
+            r#"{{
+            "keyslots": {{
+                "0": {{
+                    "type": "luks2",
+                    "key_size": {key_size},
+                    "af": {{ "type": "luks1", "stripes": 4000, "hash": "sha256" }},
+                    "area": {{ "type": "raw", "encryption": "aes-xts-plain64", "key_size": {key_size}, "offset": "{area_offset}", "size": "{area_size}" }},
+                    "kdf": {{ "type": "argon2id", "time": 1, "memory": 1024, "cpus": 1, "salt": "c2FsdA==" }}
+                }}
+            }},
+            "tokens": {{}},
+            "segments": {{}},
+            "digests": {{
+                "0": {{
+                    "type": "pbkdf2",
+                    "keyslots": ["0"],
+                    "segments": [],
+                    "hash": "sha256",
+                    "iterations": {iterations},
+                    "salt": "c2FsdA==",
+                    "digest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                }}
+            }},
+            "config": {{ "json_size": "{json_size}", "keyslots_size": "{keyslots_size}" }}
+        }}"#,
+            key_size = TEST_KEY_SIZE,
+            area_offset = LUKS2_BINARY_HEADER_SIZE * 8,
+            area_size = TEST_AREA_SIZE,
+            iterations = TEST_ITERATIONS,
+            json_size = LUKS2_DEFAULT_JSON_SIZE,
+            keyslots_size = LUKS2_DEFAULT_KEYSLOTS_SIZE
+        );
+
+        let metadata: Luks2Metadata = serde_json::from_str(&json_metadata).unwrap();
+        let header = LuksHeader::V2(Luks2Header {
+            version: 2,
+            hdr_size: (LUKS2_BINARY_HEADER_SIZE * 4) as u64,
+            seqid: 1,
+            label: "test".to_string(),
+            checksum_alg: Luks2HashAlg::Sha256,
+            salt: [0u8; LUKS2_SALT_SIZE],
+            uuid: LuksDeviceUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            subsystem: "".to_string(),
+            hdr_offset: 0,
+            checksum: [0u8; LUKS2_CHECKSUM_SIZE],
+            metadata,
+        });
+
+        // Initialize keyslot data with some dummy data (enough for AF-split area)
+        let mut keyslots = HashMap::new();
+        let slot0 = KeySlotId::from("0");
+        keyslots.insert(slot0.clone(), vec![0u8; TEST_AREA_SIZE]);
+
+        let mut device = LuksDevice {
+            header,
+            keyslots: keyslots.clone(),
+            unlocked_key: None,
+        };
+
+        // We need a real volume key that would "decrypt" our dummy area to something verifiable
+        // But since we are testing the KDF/CR flow, we can manually set the digest to match
+        // what PBKDF2(volume_key) would produce.
+        let volume_key_bytes = vec![0x42u8; TEST_VOL_KEY_SIZE];
+        let volume_key = VolumeKey::new(volume_key_bytes.clone()).unwrap();
+
+        // Update the digest to match our volume key so verify() works
+        if let LuksHeader::V2(ref mut h) = device.header {
+            if let Some(crate::Luks2Digest::Pbkdf2 { digest, salt, .. }) = h.metadata.digests.get_mut("0") {
+                let salt_bytes = base64::engine::general_purpose::STANDARD.decode(&salt).unwrap();
+                let mut expected_digest = vec![0u8; SHA256_DIGEST_SIZE];
+                pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(
+                    &volume_key_bytes,
+                    &salt_bytes,
+                    TEST_ITERATIONS,
+                    &mut expected_digest,
+                )
+                .unwrap();
+                *digest = base64::engine::general_purpose::STANDARD.encode(expected_digest);
+            }
+        }
+
+        let old_password = "old-password".to_string();
+        let old_key = UnlockKey::from_passphrase(old_password);
+
+        // Manually "encrypt" the volume key into the keyslot area so get_volume_key works
+        // This is necessary because we don't have a real disk.
+        device.update_keyslot(&slot0, &old_key, &volume_key).unwrap();
+
+        // 2. Add challenge-response by changing the passphrase
+        let new_password = "new-password".to_string();
+        let new_key =
+            UnlockKey::from_passphrase(new_password).with_software_challenge_response(TEST_CR_SECRET.to_vec());
+
+        device.change_unlock_key(&slot0, &old_key, &new_key).unwrap();
+
+        // 3. Verify unlocking works with both password and CR
+        let mut device_to_unlock = device;
+
+        // Verify the library automatically created the challenge-response token
+        let cr_slots = device_to_unlock.get_challenge_response_keyslots();
+        assert_eq!(cr_slots.len(), 1, "Token should be automatically created");
+        let (slot_id, _serial, _slot) = &cr_slots[0];
+        assert_eq!(slot_id, &slot0);
+
+        device_to_unlock
+            .unlock(&slot0, &new_key)
+            .expect("Should unlock with CR");
+        assert!(device_to_unlock.unlocked_key.is_some());
+
+        // 4. Verify that changing BACK to a simple password removes the token
+        let password_only_key = UnlockKey::from_passphrase("simple-password".to_string());
+        device_to_unlock
+            .change_unlock_key(&slot0, &new_key, &password_only_key)
+            .unwrap();
+        assert_eq!(
+            device_to_unlock.get_challenge_response_keyslots().len(),
+            0,
+            "Token should be removed"
+        );
+
+        // 5. Verify unlocking fails with wrong CR secret (re-enroll first)
+        device_to_unlock
+            .change_unlock_key(&slot0, &password_only_key, &new_key)
+            .unwrap();
+        let wrong_cr_key = UnlockKey::from_passphrase("new-password".to_string())
+            .with_software_challenge_response(vec![0x00, 0x00, 0x00, 0x00]);
+        let result = device_to_unlock.get_volume_key(&slot0, &wrong_cr_key);
+        let vk = result.unwrap();
+        device_to_unlock.unlocked_key = Some(vk);
+        assert!(!device_to_unlock.verify(&slot0).unwrap());
     }
 }
