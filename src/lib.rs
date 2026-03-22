@@ -919,13 +919,7 @@ impl LuksHeader {
             unlocked_key: None,
         })
     }
-}
 
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-impl LuksHeader {
     /// Reads a LUKS header from a reader.
     ///
     /// This only reads the header metadata, not the keyslot data areas.
@@ -1041,6 +1035,10 @@ impl LuksHeader {
             _ => Err(LuksError::UnsupportedVersion(version)),
         }
     }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]
