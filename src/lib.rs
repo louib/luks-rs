@@ -309,11 +309,11 @@ impl LuksDevice {
         Ok(())
     }
 
-    /// Changes the passphrase for a specific keyslot without changing the volume key.
+    /// Changes the unlock key for a specific keyslot without changing the volume key.
     ///
     /// This only updates the metadata in memory. You must call [`to_writer`] to persist the changes.
     #[cfg(feature = "_write")]
-    pub fn change_passphrase(
+    pub fn change_unlock_key(
         &mut self,
         keyslot_id: &KeySlotId,
         old_key: &UnlockKey,
@@ -1276,7 +1276,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "_write")]
-    fn test_change_passphrase() {
+    fn test_change_unlock_key() {
         use aes::cipher::KeyInit;
         use base64::Engine;
         use rand::Rng;
@@ -1406,10 +1406,10 @@ mod tests {
             unlocked_key: None,
         };
 
-        // 2. Change passphrase
+        // 2. Change unlock key
         device
-            .change_passphrase(&ks0, &old_key, &new_key)
-            .expect("change_passphrase failed");
+            .change_unlock_key(&ks0, &old_key, &new_key)
+            .expect("change_unlock_key failed");
 
         // 3. Verify
         device.unlock(&ks0, &new_key).expect("unlock failed");
