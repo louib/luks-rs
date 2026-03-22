@@ -85,6 +85,7 @@ pub fn merge(
 /// Splits the original data into anti-forensic stripes.
 ///
 /// This is the inverse of [`merge`].
+#[cfg(feature = "_write")]
 pub fn split(
     data: &[u8],
     hash_alg: &Luks2HashAlg,
@@ -165,6 +166,7 @@ mod tests {
     use rand::Rng;
 
     #[test]
+    #[cfg(feature = "_write")]
     fn test_af_roundtrip() {
         let block_size = 32;
         let stripes = 10;

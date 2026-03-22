@@ -7,7 +7,6 @@ use std::io::{Read, Seek, Write};
 use std::str::FromStr;
 use thiserror::Error;
 
-#[cfg(feature = "_open")]
 use {
     aes::cipher::KeyInit,
     base64::Engine as _,
@@ -39,7 +38,6 @@ pub use keyslot::{
 /// A representation of a LUKS device, including its header and keyslots.
 ///
 /// This structure holds the primary metadata for the encrypted device.
-#[cfg(feature = "_open")]
 #[derive(Serialize, Deserialize)]
 pub struct LuksDevice {
     /// The LUKS header (either version 1 or 2).
@@ -51,7 +49,6 @@ pub struct LuksDevice {
     pub unlocked_key: Option<VolumeKey>,
 }
 
-#[cfg(feature = "_open")]
 impl LuksDevice {
     /// Unlocks the device with a passphrase, storing the volume key in the device.
     pub fn unlock(&mut self, keyslot_id: &KeySlotId, key: &UnlockKey) -> Result<(), LuksError> {
@@ -67,6 +64,7 @@ impl LuksDevice {
     }
 
     /// Writes the LUKS device to a writer.
+    #[cfg(feature = "_write")]
     pub fn to_writer<W: Write + Seek>(&self, mut writer: W) -> Result<(), LuksError> {
         self.header.to_writer(&mut writer)?;
 
@@ -313,6 +311,7 @@ impl LuksDevice {
     /// Changes the passphrase for a specific keyslot without changing the volume key.
     ///
     /// This only updates the metadata in memory. You must call [`to_writer`] to persist the changes.
+    #[cfg(feature = "_write")]
     pub fn change_passphrase(
         &mut self,
         keyslot_id: &KeySlotId,
@@ -323,6 +322,7 @@ impl LuksDevice {
         self.update_keyslot(keyslot_id, new_key, &volume_key)
     }
 
+    #[cfg(feature = "_write")]
     fn update_keyslot(
         &mut self,
         keyslot_id: &KeySlotId,
@@ -433,7 +433,6 @@ impl LuksDevice {
 /// Returns true if the device at the given path is a LUKS device.
 ///
 /// This only checks the magic signature at the beginning of the device.
-#[cfg(feature = "_open")]
 pub fn is_luks_device<P: AsRef<Path>>(path: P) -> Result<bool, LuksError> {
     let mut file = std::fs::File::open(path)?;
     let mut buffer = [0u8; LUKS_MAGIC_SIZE];
@@ -783,6 +782,7 @@ impl Luks2Header {
     }
 
     /// Writes the header and its metadata to a writer.
+    #[cfg(feature = "_write")]
     pub fn to_writer<W: Write + Seek>(&self, mut writer: W) -> Result<(), LuksError> {
         // Serialize JSON metadata
         let json_str = serde_json::to_string(&self.metadata)?;
@@ -884,6 +884,7 @@ impl LuksHeader {
     }
 
     /// Writes the header to a writer.
+    #[cfg(feature = "_write")]
     pub fn to_writer<W: Write + Seek>(&self, writer: W) -> Result<(), LuksError> {
         match self {
             LuksHeader::V1 => Err(LuksError::UnsupportedVersion(1)),
@@ -894,7 +895,6 @@ impl LuksHeader {
     /// Opens a LUKS device from a reader.
     ///
     /// This reads the header and all keyslot data areas from the reader.
-    #[cfg(feature = "_open")]
     pub fn open<R: Read + Seek>(mut reader: R) -> Result<LuksDevice, LuksError> {
         let header = Self::from_reader(&mut reader)?;
         let mut keyslots = HashMap::new();
@@ -1117,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "_open")]
+    #[cfg(feature = "_write")]
     fn test_device_roundtrip() {
         use aes::cipher::KeyInit;
         use base64::Engine;
@@ -1269,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "_open")]
+    #[cfg(feature = "_write")]
     fn test_change_passphrase() {
         use aes::cipher::KeyInit;
         use base64::Engine;
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "_open")]
+    #[cfg(feature = "_write")]
     fn test_unlock() {
         use aes::cipher::KeyInit;
         use base64::Engine;
@@ -1556,6 +1556,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "_write")]
     fn test_header_roundtrip() {
         let mut salt = [0u8; LUKS2_SALT_SIZE];
         salt[0..4].copy_from_slice(b"salt");
@@ -2003,7 +2004,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "_open")]
     fn test_is_luks_device() {
         let path = std::env::temp_dir().join("test_luks_magic");
         std::fs::write(&path, &LUKS_MAGIC).unwrap();

@@ -17,20 +17,18 @@ include = [
 ]
 
 [features]
-_open = []
+_write = []
 interactive = ["rpassword"]
 
 [[bin]]
 name = "create_fixture"
-required-features = ["_open"]
 
 [[bin]]
 name = "verify_fixture"
-required-features = ["_open"]
 
 [[example]]
 name = "verify_passphrase"
-required-features = ["_open", "interactive"]
+required-features = ["interactive"]
 
 [dependencies]
 aes = "0.8"
