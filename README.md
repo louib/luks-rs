@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/luks.svg)](https://crates.io/crates/luks)
 [![Documentation](https://docs.rs/luks/badge.svg)](https://docs.rs/luks/)
 [![Build Status](https://github.com/louib/luks-rs/actions/workflows/on-merge.yaml/badge.svg?branch=main)](https://github.com/louib/luks-rs/actions/workflows/on-merge.yaml)
+[![dependency status](https://deps.rs/repo/github/louib/luks-rs/status.svg)](https://deps.rs/repo/github/louib/luks-rs)
 
 > [!CAUTION]
 > This library is still experimental and under active development. APIs may change and it should not yet be used for production data without careful consideration.

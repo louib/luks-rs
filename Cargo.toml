@@ -1,6 +1,6 @@
 [package]
 name = "luks"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 description = "Pure-Rust Library for the Linux Unified Key Setup"
 repository = "https://github.com/louib/luks-rs"
@@ -32,22 +32,22 @@ name = "verify_passphrase"
 required-features = ["interactive"]
 
 [dependencies]
-aes = "0.8"
+aes = "0.9"
 argon2 = "0.5"
 base64 = "0.22"
 byteorder = "1.5"
-hmac = "0.12"
-pbkdf2 = "0.12"
+hmac = "0.13"
+pbkdf2 = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2.0"
-xts-mode = "0.5"
+xts-mode = "0.6"
 secrecy = "0.10"
 rpassword = { version = "7", optional = true }
-rand = "0.9"
+rand = "0.10"
 challenge_response = { version = "0.5", optional = true, default-features = false, features = ["nusb"] }
-hkdf = { version = "0.12", optional = true }
-sha1 = { version = "0.10", optional = true }
+hkdf = { version = "0.13", optional = true }
+sha1 = { version = "0.11", optional = true }
 
 [dev-dependencies]
