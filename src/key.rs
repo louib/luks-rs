@@ -138,7 +138,7 @@ impl UnlockKey {
                 }
                 ChallengeResponseKey::Software { secret } => {
                     // Simulation of HMAC-SHA1 hardware response
-                    use hmac::{Hmac, Mac};
+                    use hmac::{Hmac, KeyInit, Mac};
                     use sha1::Sha1;
                     let mut mac = Hmac::<Sha1>::new_from_slice(secret.expose_secret())
                         .map_err(|e| crate::LuksError::ChallengeResponse(format!("Invalid HMAC key: {}", e)))?;
@@ -181,7 +181,7 @@ mod tests {
         let effective_key = key.calculate_effective_key(&challenge).unwrap();
 
         // Manual calculation for verification
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         use sha1::Sha1;
         let mut mac = Hmac::<Sha1>::new_from_slice(&hardware_secret).unwrap();
         mac.update(&challenge);

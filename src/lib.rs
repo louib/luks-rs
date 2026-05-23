@@ -18,7 +18,7 @@ use crate::challenge_response::ChallengeResponseSlot;
 use aes::cipher::KeyInit;
 use base64::Engine as _;
 #[cfg(feature = "_write")]
-use rand::Rng;
+use rand::RngExt;
 use sha2::Sha512;
 use std::io::SeekFrom;
 use std::path::Path;
@@ -1254,7 +1254,7 @@ mod tests {
     fn test_device_roundtrip() {
         use aes::cipher::KeyInit;
         use base64::Engine;
-        use rand::Rng;
+        use rand::RngExt;
         use xts_mode::{Xts128, get_tweak_default};
         let mut rng = rand::rng();
 
@@ -1406,7 +1406,7 @@ mod tests {
     fn test_change_unlock_key() {
         use aes::cipher::KeyInit;
         use base64::Engine;
-        use rand::Rng;
+        use rand::RngExt;
         use xts_mode::{Xts128, get_tweak_default};
         let mut rng = rand::rng();
 
@@ -1558,7 +1558,7 @@ mod tests {
     fn test_unlock() {
         use aes::cipher::KeyInit;
         use base64::Engine;
-        use rand::Rng;
+        use rand::RngExt;
         use xts_mode::{Xts128, get_tweak_default};
         let mut rng = rand::rng();
 

@@ -165,7 +165,7 @@ mod tests {
     #[cfg(feature = "_write")]
     use super::*;
     #[cfg(feature = "_write")]
-    use rand::Rng;
+    use rand::RngExt;
 
     #[test]
     #[cfg(feature = "_write")]
