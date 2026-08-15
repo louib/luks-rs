@@ -1,6 +1,6 @@
 [package]
 name = "luks"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 description = "Pure-Rust Library for the Linux Unified Key Setup"
 repository = "https://github.com/louib/luks-rs"
@@ -34,7 +34,7 @@ required-features = ["interactive"]
 [dependencies]
 aes = "0.9"
 argon2 = "0.5"
-base64 = "0.22"
+base64 = "0.23"
 byteorder = "1.5"
 hmac = "0.13"
 pbkdf2 = "0.13"
