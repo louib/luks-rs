@@ -1,0 +1,35 @@
+---
+name: CI on PR
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Get Nix version
+        id: nix-version
+        run: echo "version=$(cat .nix-version)" >> $GITHUB_OUTPUT
+      - uses: cachix/install-nix-action@v31
+        with:
+          install_url: https://releases.nixos.org/nix/nix-${{ steps.nix-version.outputs.version }}/install
+      - name: run cargo test
+        run: nix develop -c cargo test --all-features
+
+  formatting:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Get Nix version
+        id: nix-version
+        run: echo "version=$(cat .nix-version)" >> $GITHUB_OUTPUT
+      - uses: cachix/install-nix-action@v31
+        with:
+          install_url: https://releases.nixos.org/nix/nix-${{ steps.nix-version.outputs.version }}/install
+      - name: running cargo fmt
+        run: |
+          cargo fmt --check
